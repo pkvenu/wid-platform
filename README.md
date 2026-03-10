@@ -6,11 +6,17 @@ WID is an enterprise-grade platform for discovering, attesting, and governing no
 
 ## Screenshots
 
-| Identity Graph with Attack Paths | Workload Risk Summary |
-|:---:|:---:|
-| ![Identity graph showing workload nodes, credential edges, and attack path analysis](docs/screenshots/graph-attack-paths.png) | ![Selected workload node showing threat brief, risk score, and security findings](docs/screenshots/node-risk-summary.png) |
-| **Node Detail with Policy Modes** | **Connection Analysis** |
-| ![Workload detail panel with SIM/AUDIT/ENFORCE policy mode selector and findings list](docs/screenshots/node-detail.png) | ![Selected node with connection lines showing network exposure, identity bindings, and agent protocol relationships](docs/screenshots/node-connections.png) |
+### Identity Graph with Attack Paths
+<img src="docs/screenshots/graph-attack-paths.png" alt="Identity graph showing workload nodes, credential edges, and attack path analysis" width="100%">
+
+### Workload Risk Summary
+<img src="docs/screenshots/node-risk-summary.png" alt="Selected workload node showing threat brief, risk score, and security findings" width="100%">
+
+### Node Detail with Policy Modes
+<img src="docs/screenshots/node-detail.png" alt="Workload detail panel with SIM/AUDIT/ENFORCE policy mode selector and findings list" width="100%">
+
+### Connection Analysis
+<img src="docs/screenshots/node-connections.png" alt="Selected node with connection lines showing network exposure, identity bindings, and agent protocol relationships" width="100%">
 
 ## Key Features
 
