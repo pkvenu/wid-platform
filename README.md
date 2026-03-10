@@ -20,6 +20,15 @@ WID is an enterprise-grade platform for discovering, attesting, and governing no
 ### Connection Analysis
 <img src="docs/screenshots/node-connections.png" alt="Selected node with connection lines showing network exposure, identity bindings, and agent protocol relationships" width="100%">
 
+### Workload Inventory
+<img src="docs/screenshots/workload-inventory.png" alt="Workload inventory showing 41 discovered NHIs with attestation status, trust level, risk scores, and category filters" width="100%">
+
+### Workload Detail — Attestation & Governance
+<img src="docs/screenshots/workload-detail-attestation.png" alt="Workload detail showing attestation summary with 4 methods passed, SPIFFE ID, WID token status, and governance posture actions" width="100%">
+
+### Workload Governance — Posture Actions & Attestation Chain
+<img src="docs/screenshots/workload-governance.png" alt="Governance status panel showing attestation chain (GCP Metadata JWT, SPIFFE X.509-SVID, Multi-Signal ABAC, Catalog Match), posture actions, and infrastructure labels" width="100%">
+
 ---
 
 ## Core Capabilities
