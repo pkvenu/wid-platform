@@ -23,11 +23,11 @@ WID is an enterprise-grade platform for discovering, attesting, and governing no
 ### Workload Inventory
 <img src="docs/screenshots/workload-inventory.png" alt="Workload inventory showing 41 discovered NHIs with attestation status, trust level, risk scores, and category filters" width="100%">
 
-### Workload Detail — Attestation & Governance
-<img src="docs/screenshots/workload-detail-attestation.png" alt="Workload detail showing attestation summary with 4 methods passed, SPIFFE ID, WID token status, and governance posture actions" width="100%">
+### Workload Detail — Attestation & AI Agent Info
+<img src="docs/screenshots/workload-detail-attestation.png" alt="Expanded workload row showing SPIFFE ID, shadow NHI classification, AI agent protocol details, 4-method attestation summary, WID token status, and governance posture" width="100%">
 
-### Workload Governance — Posture Actions & Attestation Chain
-<img src="docs/screenshots/workload-governance.png" alt="Governance status panel showing attestation chain (GCP Metadata JWT, SPIFFE X.509-SVID, Multi-Signal ABAC, Catalog Match), posture actions, and infrastructure labels" width="100%">
+### Governance — Attestation Chain & Posture Actions
+<img src="docs/screenshots/workload-governance.png" alt="Attestation chain showing GCP Metadata JWT, SPIFFE X.509-SVID, Multi-Signal ABAC, and Catalog Match with posture actions and infrastructure labels" width="100%">
 
 ---
 
@@ -347,7 +347,7 @@ terraform init && terraform plan -var-file=dev.tfvars
 terraform apply -var-file=dev.tfvars
 ```
 
-See [DEPLOYMENT.md](DEPLOYMENT.md) for full deployment guide.
+See [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md) for full deployment guide.
 
 ---
 
