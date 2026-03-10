@@ -387,4 +387,4 @@ For scoring algorithms, policy enforcement logic, relationship generation, and a
 
 ## License
 
-Proprietary. All rights reserved.
+MIT License. See [LICENSE](LICENSE) for details.
