@@ -6,28 +6,40 @@ WID is an enterprise-grade platform for discovering, attesting, and governing no
 
 ---
 
-## Screenshots
+## Product Walkthrough
 
-### Identity Graph with Attack Paths
-<img src="docs/screenshots/graph-attack-paths.png" alt="Identity graph showing workload nodes, credential edges, and attack path analysis" width="100%">
+### 1. Connect Cloud Accounts
+<img src="docs/screenshots/connector-wizard.png" alt="Cloud connector wizard supporting AWS, GCP, Azure, Kubernetes, Vault, and Docker" width="100%">
 
-### Workload Risk Summary
-<img src="docs/screenshots/node-risk-summary.png" alt="Selected workload node showing threat brief, risk score, and security findings" width="100%">
+<img src="docs/screenshots/connector-dashboard.png" alt="Connector dashboard showing active GCP account with 41 discovered workloads" width="100%">
 
-### Node Detail with Policy Modes
-<img src="docs/screenshots/node-detail.png" alt="Workload detail panel with SIM/AUDIT/ENFORCE policy mode selector and findings list" width="100%">
+### 2. Discover & Govern Workloads
+<img src="docs/screenshots/workload-inventory.png" alt="Workload inventory showing 41 NHIs with attestation status, trust level, risk scores, and category filters" width="100%">
 
-### Connection Analysis
-<img src="docs/screenshots/node-connections.png" alt="Selected node with connection lines showing network exposure, identity bindings, and agent protocol relationships" width="100%">
+<img src="docs/screenshots/workload-detail-attestation.png" alt="Workload detail showing SPIFFE ID, AI agent info, 4-method attestation summary, WID token status, and governance posture" width="100%">
 
-### Workload Inventory
-<img src="docs/screenshots/workload-inventory.png" alt="Workload inventory showing 41 discovered NHIs with attestation status, trust level, risk scores, and category filters" width="100%">
+<img src="docs/screenshots/workload-governance.png" alt="Attestation chain (GCP Metadata JWT, SPIFFE X.509-SVID, Multi-Signal ABAC, Catalog Match), posture actions, and infrastructure labels" width="100%">
 
-### Workload Detail — Attestation & AI Agent Info
-<img src="docs/screenshots/workload-detail-attestation.png" alt="Expanded workload row showing SPIFFE ID, shadow NHI classification, AI agent protocol details, 4-method attestation summary, WID token status, and governance posture" width="100%">
+### 3. Explore the Identity Graph
+<img src="docs/screenshots/graph-attack-paths.png" alt="Identity graph with workload nodes, credential edges, and attack path analysis panel" width="100%">
 
-### Governance — Attestation Chain & Posture Actions
-<img src="docs/screenshots/workload-governance.png" alt="Attestation chain showing GCP Metadata JWT, SPIFFE X.509-SVID, Multi-Signal ABAC, and Catalog Match with posture actions and infrastructure labels" width="100%">
+### 4. Investigate Attack Paths
+<img src="docs/screenshots/attack-paths.png" alt="Attack paths panel showing credential exposure findings ranked by severity" width="100%">
+
+<img src="docs/screenshots/node-risk-summary.png" alt="Selected node showing threat brief with risk score, blast radius, and security findings" width="100%">
+
+### 5. Remediate: Simulate → Audit → Enforce
+<img src="docs/screenshots/remediation-playbook.png" alt="Remediation playbook with ranked controls, SIM/AUDIT/ENFORCE stepper, and policy deployment options" width="100%">
+
+<img src="docs/screenshots/node-connections.png" alt="Node selected in SIM mode showing connections with network exposure, identity bindings, and agent protocol relationships" width="100%">
+
+### 6. Monitor Access Events
+<img src="docs/screenshots/access-events.png" alt="Access Events page with enforcement timeline, decision list, and trace chain visualization" width="100%">
+
+<img src="docs/screenshots/access-events-detail.png" alt="Expanded decision showing enforcement timeline, WID token details, chain visualization, and request payload" width="100%">
+
+### 7. Deploy Policy Templates
+<img src="docs/screenshots/policy-templates.png" alt="Policy template gallery with 30+ templates across access control, AI agent, credential, and compliance categories" width="100%">
 
 ---
 
@@ -348,6 +360,8 @@ terraform apply -var-file=dev.tfvars
 ```
 
 See [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md) for full deployment guide.
+
+For scoring algorithms, policy enforcement logic, relationship generation, and architectural decisions, see [docs/ARCHITECTURE-DEEP-DIVE.md](docs/ARCHITECTURE-DEEP-DIVE.md).
 
 ---
 
