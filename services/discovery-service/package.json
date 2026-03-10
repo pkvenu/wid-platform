@@ -1,0 +1,36 @@
+{
+  "name": "discovery-service",
+  "version": "1.0.0",
+  "description": "Multi-cloud workload discovery service with pluggable scanner architecture",
+  "main": "src/index.js",
+  "scripts": {
+    "start": "node src/index.js",
+    "dev": "nodemon src/index.js"
+  },
+  "dependencies": {
+    "@google-cloud/secret-manager": "^5.6.0",
+    "@aws-sdk/client-cloudtrail": "^3.490.0",
+    "@aws-sdk/client-dynamodb": "^3.490.0",
+    "@aws-sdk/client-ec2": "^3.490.0",
+    "@aws-sdk/client-ecs": "^3.490.0",
+    "@aws-sdk/client-elastic-load-balancing-v2": "^3.490.0",
+    "@aws-sdk/client-iam": "^3.987.0",
+    "@aws-sdk/client-kms": "^3.490.0",
+    "@aws-sdk/client-lambda": "^3.490.0",
+    "@aws-sdk/client-rds": "^3.490.0",
+    "@aws-sdk/client-s3": "^3.490.0",
+    "@aws-sdk/client-secrets-manager": "^3.490.0",
+    "@aws-sdk/client-sts": "^3.490.0",
+    "@kubernetes/client-node": "^0.20.0",
+    "cookie-parser": "^1.4.6",
+    "cors": "^2.8.5",
+    "dockerode": "^4.0.2",
+    "express": "^4.18.2",
+    "jsonwebtoken": "^9.0.2",
+    "googleapis": "^171.4.0",
+    "pg": "^8.11.3"
+  },
+  "devDependencies": {
+    "nodemon": "^3.0.2"
+  }
+}

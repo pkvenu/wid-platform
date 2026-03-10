@@ -1,0 +1,81 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: >
+  WID Discovery Role — Creates a read-only IAM role for Workload Identity Director
+  to discover and inventory AWS resources. No write access granted.
+
+Parameters:
+  ExternalId:
+    Type: String
+    Description: External ID for cross-account trust (provided by WID during setup)
+    Default: wid-discovery-default
+  WIDAccountId:
+    Type: String
+    Description: WID platform AWS account ID (for cross-account trust)
+    Default: '265663183174'
+
+Resources:
+  WIDDiscoveryRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: WIDDiscoveryRole
+      Description: Read-only role for WID workload discovery and identity scanning
+      MaxSessionDuration: 3600
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              AWS: !Sub 'arn:aws:iam::${WIDAccountId}:root'
+            Action: 'sts:AssumeRole'
+            Condition:
+              StringEquals:
+                'sts:ExternalId': !Ref ExternalId
+      ManagedPolicyArns:
+        # AWS managed read-only policies
+        - arn:aws:iam::aws:policy/SecurityAudit
+        - arn:aws:iam::aws:policy/job-function/ViewOnlyAccess
+      Tags:
+        - Key: Purpose
+          Value: wid-discovery
+        - Key: ManagedBy
+          Value: wid-platform
+        - Key: Access
+          Value: read-only
+
+  WIDDiscoveryPolicy:
+    Type: AWS::IAM::Policy
+    Properties:
+      PolicyName: WIDDiscoveryExtras
+      Roles:
+        - !Ref WIDDiscoveryRole
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          # Additional read-only permissions not covered by SecurityAudit
+          - Effect: Allow
+            Action:
+              - 'ecs:ListTasks'
+              - 'ecs:DescribeTasks'
+              - 'ecs:ListServices'
+              - 'ecs:DescribeServices'
+              - 'ecs:ListClusters'
+              - 'ecs:DescribeClusters'
+              - 'lambda:ListFunctions'
+              - 'lambda:GetFunction'
+              - 'lambda:ListEventSourceMappings'
+              - 'secretsmanager:ListSecrets'
+              - 'secretsmanager:DescribeSecret'
+              - 'kms:ListKeys'
+              - 'kms:DescribeKey'
+              - 'kms:ListAliases'
+              - 'sts:GetCallerIdentity'
+              - 'organizations:DescribeOrganization'
+            Resource: '*'
+
+Outputs:
+  RoleArn:
+    Description: ARN of the WID Discovery Role — paste this into the WID connector setup
+    Value: !GetAtt WIDDiscoveryRole.Arn
+  ExternalId:
+    Description: External ID used for cross-account trust
+    Value: !Ref ExternalId

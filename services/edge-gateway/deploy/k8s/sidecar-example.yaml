@@ -1,0 +1,165 @@
+# =============================================================================
+# Edge Gateway — Kubernetes Sidecar Deployment
+# =============================================================================
+# Inject these containers into any pod to enable transparent workload identity.
+# The init container sets up iptables, and the gateway runs as a sidecar.
+#
+# Usage: Add the initContainers and containers to your existing pod spec.
+# =============================================================================
+
+---
+# Example: Application with Edge Gateway sidecar
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: my-app
+  namespace: default
+  labels:
+    app: my-app
+    wid.io/gateway: enabled
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: my-app
+  template:
+    metadata:
+      labels:
+        app: my-app
+        wid.io/gateway: enabled
+      annotations:
+        wid.io/mode: audit
+        wid.io/workload-name: my-app
+    spec:
+      # ── Init container: sets up iptables rules ──
+      initContainers:
+        - name: gateway-init
+          image: ${ECR_REGISTRY}/edge-gateway:latest
+          command: ["/bin/sh", "/app/scripts/init-iptables.sh"]
+          env:
+            - name: GATEWAY_UID
+              value: "1337"
+            - name: OUTBOUND_PORT
+              value: "15001"
+            - name: INBOUND_PORT
+              value: "15006"
+            - name: EXCLUDE_PORTS
+              value: "3000,3001,3002,3004,5432,8181,8200,15000,15001,15006"
+          securityContext:
+            capabilities:
+              add: ["NET_ADMIN", "NET_RAW"]
+            privileged: false
+            runAsUser: 0
+            runAsGroup: 0
+            runAsNonRoot: false
+
+      containers:
+        # ── Your application ──
+        - name: app
+          image: my-app:latest
+          ports:
+            - containerPort: 8080
+          env:
+            - name: PORT
+              value: "8080"
+          resources:
+            requests:
+              cpu: 100m
+              memory: 128Mi
+            limits:
+              cpu: 500m
+              memory: 512Mi
+
+        # ── Edge Gateway sidecar ──
+        - name: edge-gateway
+          image: ${ECR_REGISTRY}/edge-gateway:latest
+          ports:
+            - containerPort: 15000
+              name: gw-admin
+            - containerPort: 15001
+              name: gw-outbound
+            - containerPort: 15006
+              name: gw-inbound
+          env:
+            - name: WORKLOAD_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.labels['app']
+            - name: WORKLOAD_NS
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.namespace
+            - name: SPIFFE_ID
+              value: "spiffe://cluster.local/ns/$(WORKLOAD_NS)/sa/$(WORKLOAD_NAME)"
+            - name: APP_PORT
+              value: "8080"
+            - name: DEFAULT_MODE
+              value: "audit"
+            - name: FAIL_BEHAVIOR
+              value: "open"
+            - name: POLICY_SERVICE_URL
+              value: "http://policy-engine.wid-system.svc.cluster.local:3001"
+            - name: TOKEN_SERVICE_URL
+              value: "http://token-service.wid-system.svc.cluster.local:3000"
+            - name: BROKER_URL
+              value: "http://credential-broker.wid-system.svc.cluster.local:3002"
+            - name: LOG_LEVEL
+              value: "info"
+          securityContext:
+            runAsUser: 1337
+            runAsGroup: 1337
+          resources:
+            requests:
+              cpu: 50m
+              memory: 64Mi
+            limits:
+              cpu: 200m
+              memory: 256Mi
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: 15000
+            initialDelaySeconds: 2
+            periodSeconds: 5
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: 15000
+            initialDelaySeconds: 5
+            periodSeconds: 10
+
+---
+# ConfigMap for gateway settings (optional — override per-namespace)
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: edge-gateway-config
+  namespace: default
+data:
+  DEFAULT_MODE: "audit"
+  FAIL_BEHAVIOR: "open"
+  LOG_LEVEL: "info"
+  CACHE_TTL_MS: "30000"
+  CP_TIMEOUT_MS: "300"
+
+---
+# Service for the gateway admin API (for Prometheus scraping)
+apiVersion: v1
+kind: Service
+metadata:
+  name: edge-gateway-metrics
+  namespace: default
+  labels:
+    app: edge-gateway
+  annotations:
+    prometheus.io/scrape: "true"
+    prometheus.io/port: "15000"
+    prometheus.io/path: "/metrics/prometheus"
+spec:
+  selector:
+    wid.io/gateway: enabled
+  ports:
+    - port: 15000
+      targetPort: 15000
+      name: admin
+  clusterIP: None  # Headless — Prometheus discovers all pods

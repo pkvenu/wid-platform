@@ -1,0 +1,39 @@
+# .gitleaks.toml — Gitleaks configuration for WID Platform
+#
+# Uses gitleaks built-in rules by default. This file adds allowlists
+# and rule overrides to reduce false positives on non-secret config values.
+
+title = "WID Platform Gitleaks Config"
+
+[allowlist]
+  description = "Allowlisted paths"
+  paths = [
+    "database/.*",
+    ".*\\.example",
+    ".*\\.md",
+    "deploy/gcp/terraform/terraform\\.tfstate.*",
+    ".*test.*",
+  ]
+
+# Override: generic-api-key rule tends to flag non-secret configuration values
+# (e.g., project IDs, service names, enum strings). Tighten the entropy and
+# add path/keyword exceptions to cut noise.
+[[rules]]
+  id = "generic-api-key"
+  description = "Generic API Key (tuned for WID)"
+  regex = '''(?i)(?:api[_-]?key|apikey|secret[_-]?key)\s*[:=]\s*['"]?([0-9a-zA-Z\-_]{20,80})['"]?'''
+  entropy = 3.5
+  secretGroup = 1
+
+  [rules.allowlist]
+    description = "Ignore common non-secret patterns in config and infra files"
+    paths = [
+      "docker-compose.*\\.yml",
+      "deploy/.*",
+      "\\.env\\.example",
+      ".*\\.tfvars",
+    ]
+    regexTarget = "line"
+    regexes = [
+      '''(?i)(root-token|placeholder|changeme|example|YOUR_)''',
+    ]

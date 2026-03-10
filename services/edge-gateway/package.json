@@ -1,0 +1,16 @@
+{
+  "name": "edge-gateway",
+  "version": "1.0.0",
+  "description": "Transparent HTTP proxy — on-prem/non-mesh deployment mode for Workload Identity Platform",
+  "main": "src/gateway.js",
+  "scripts": {
+    "start": "node src/gateway.js",
+    "test": "node --test test/gateway.test.js",
+    "docker:local": "docker compose -f deploy/local/docker-compose.yml up --build",
+    "docker:down": "docker compose -f deploy/local/docker-compose.yml down -v"
+  },
+  "dependencies": {
+    "@wid/core": "file:../../shared/data-plane-core"
+  },
+  "engines": { "node": ">=18.0.0" }
+}

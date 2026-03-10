@@ -1,0 +1,121 @@
+# =============================================================================
+# WID Platform — Local Data Plane
+# =============================================================================
+#
+# Run this anywhere: laptop, on-prem VM, GCP, Azure.
+# Connects to the central control plane (AWS) via the relay.
+#
+# Usage:
+#   # Set your central control plane URL first:
+#   export CENTRAL_URL=http://<AWS_EC2_IP>:3005
+#
+#   docker compose -f docker-compose.local.yml up --build
+#
+# What this runs:
+#   relay              — Local policy cache + audit forwarder
+#   sample-frontend    — Demo frontend app (nginx)
+#   sample-backend     — Demo backend API (simple echo)
+#   frontend-gateway   — Edge Gateway sidecar for frontend
+#   backend-gateway    — Edge Gateway sidecar for backend
+#
+# No service mesh required! Edge Gateways handle identity transparently.
+#
+# =============================================================================
+
+services:
+  # ── WID Relay (connects to central control plane) ──
+  relay:
+    build:
+      context: ../../services/relay-service
+    restart: on-failure
+    ports:
+      - "3006:3005"
+    environment:
+      PORT: 3005
+      ENVIRONMENT_NAME: ${WID_ENV_NAME:-local-docker}
+      ENVIRONMENT_TYPE: ${WID_ENV_TYPE:-docker}
+      REGION: ${WID_REGION:-local}
+      CLUSTER_ID: ${WID_CLUSTER_ID:-docker-desktop}
+      # Connect to central control plane
+      CENTRAL_CONTROL_PLANE_URL: ${CENTRAL_URL:-}
+      CENTRAL_API_KEY: ${CENTRAL_API_KEY:-}
+      # Sync settings
+      POLICY_SYNC_INTERVAL_MS: "15000"
+      AUDIT_FLUSH_INTERVAL_MS: "5000"
+
+  # ════════════════════════════════════════════════════
+  # Sample Application: Frontend → Backend
+  # ════════════════════════════════════════════════════
+  #
+  # Traffic flow:
+  #   User → frontend-gateway:8080 → sample-frontend:80 → backend-gateway:8081 → sample-backend:5678
+  #                  │                                              │
+  #                  └── policy check via relay ────────────────────┘
+
+  # ── Frontend App ──
+  sample-frontend:
+    image: nginx:alpine
+    volumes:
+      - ./frontend-index.html:/usr/share/nginx/html/index.html:ro
+
+  # ── Frontend Edge Gateway (sidecar) ──
+  frontend-gateway:
+    build:
+      context: ../..
+      dockerfile: services/edge-gateway/Dockerfile
+    restart: on-failure
+    ports:
+      - "8080:15001"       # Users access frontend through here
+      - "15000:15000"      # Admin/metrics
+    environment:
+      OUTBOUND_PORT: 15001
+      INBOUND_PORT: 15006
+      ADMIN_PORT: 15000
+      APP_PORT: 80
+      APP_HOST: sample-frontend
+      WORKLOAD_NAME: sample-frontend
+      WORKLOAD_NS: default
+      TRUST_DOMAIN: company.com
+      DEFAULT_MODE: audit
+      FAIL_BEHAVIOR: open
+      # Point to local relay (NOT directly to AWS)
+      POLICY_SERVICE_URL: http://relay:3005
+      TOKEN_SERVICE_URL: http://relay:3005
+      BROKER_URL: http://relay:3005
+      LOG_LEVEL: info
+      STRUCTURED_LOGS: "true"
+    depends_on:
+      - relay
+
+  # ── Backend App ──
+  sample-backend:
+    image: hashicorp/http-echo
+    command: ["-text={\"status\":\"ok\",\"service\":\"sample-backend\",\"message\":\"Hello from backend!\"}", "-listen=:5678"]
+
+  # ── Backend Edge Gateway (sidecar) ──
+  backend-gateway:
+    build:
+      context: ../..
+      dockerfile: services/edge-gateway/Dockerfile
+    restart: on-failure
+    ports:
+      - "8081:15001"       # Direct access to backend
+      - "15010:15000"      # Admin/metrics
+    environment:
+      OUTBOUND_PORT: 15001
+      INBOUND_PORT: 15006
+      ADMIN_PORT: 15000
+      APP_PORT: 5678
+      APP_HOST: sample-backend
+      WORKLOAD_NAME: sample-backend
+      WORKLOAD_NS: default
+      TRUST_DOMAIN: company.com
+      DEFAULT_MODE: audit
+      FAIL_BEHAVIOR: open
+      POLICY_SERVICE_URL: http://relay:3005
+      TOKEN_SERVICE_URL: http://relay:3005
+      BROKER_URL: http://relay:3005
+      LOG_LEVEL: info
+      STRUCTURED_LOGS: "true"
+    depends_on:
+      - relay

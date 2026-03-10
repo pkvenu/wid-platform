@@ -1,0 +1,107 @@
+# =============================================================================
+# Envoy Frontend Sidecar — simulates Istio's ext_authz integration
+# =============================================================================
+# 
+# Flow:
+#   External request → :10000 → ext_authz check → demo-frontend:8081
+#   
+# The ext_authz filter calls our adapter on every request.
+# If approved: adapter injects x-wid-* headers, Envoy forwards to app.
+# If denied: Envoy returns 403 with decision ID.
+# =============================================================================
+
+static_resources:
+  listeners:
+    # ── Inbound: External → Frontend App ──
+    - name: frontend_inbound
+      address:
+        socket_address:
+          address: 0.0.0.0
+          port_value: 10000
+      filter_chains:
+        - filters:
+            - name: envoy.filters.network.http_connection_manager
+              typed_config:
+                "@type": type.googleapis.com/envoy.extensions.filters.network.http_connection_manager.v3.HttpConnectionManager
+                stat_prefix: frontend_inbound
+                codec_type: AUTO
+                # Generate request ID for tracing
+                request_id_extension:
+                  typed_config:
+                    "@type": type.googleapis.com/envoy.extensions.request_id.uuid.v3.UuidRequestIdConfig
+                    use_request_id_for_trace_sampling: true
+                http_filters:
+                  # ── ext_authz filter — THE KEY INTEGRATION ──
+                  - name: envoy.filters.http.ext_authz
+                    typed_config:
+                      "@type": type.googleapis.com/envoy.extensions.filters.http.ext_authz.v3.ExtAuthz
+                      transport_api_version: V3
+                      grpc_service:
+                        envoy_grpc:
+                          cluster_name: ext_authz_cluster
+                        timeout: 0.5s
+                      # CRITICAL: fail_mode_allow = false means if adapter is unreachable,
+                      # Envoy denies the request. For audit mode, the adapter itself
+                      # always returns OK (just logs what would be denied).
+                      failure_mode_allow: false
+                      # Include the peer's certificate info (SPIFFE ID) in the check request
+                      include_peer_certificate: true
+                      # NOTE: with_request_body is intentionally omitted — we NEVER
+                      # send the request body to the ext_authz adapter (zero customer data).
+                      # Status on error — 503 tells client to retry
+                      status_on_error:
+                        code: 503
+                  - name: envoy.filters.http.router
+                    typed_config:
+                      "@type": type.googleapis.com/envoy.extensions.filters.http.router.v3.Router
+                route_config:
+                  name: frontend_route
+                  virtual_hosts:
+                    - name: frontend
+                      domains: ["*"]
+                      routes:
+                        - match:
+                            prefix: "/"
+                          route:
+                            cluster: demo_frontend
+                            timeout: 30s
+
+  clusters:
+    # ── ext_authz adapter (gRPC) ──
+    - name: ext_authz_cluster
+      type: STRICT_DNS
+      connect_timeout: 1s
+      typed_extension_protocol_options:
+        envoy.extensions.upstreams.http.v3.HttpProtocolOptions:
+          "@type": type.googleapis.com/envoy.extensions.upstreams.http.v3.HttpProtocolOptions
+          explicit_http_config:
+            http2_protocol_options: {}
+      load_assignment:
+        cluster_name: ext_authz_cluster
+        endpoints:
+          - lb_endpoints:
+              - endpoint:
+                  address:
+                    socket_address:
+                      address: ext-authz-adapter
+                      port_value: 9191
+
+    # ── Demo frontend app ──
+    - name: demo_frontend
+      type: STRICT_DNS
+      connect_timeout: 5s
+      load_assignment:
+        cluster_name: demo_frontend
+        endpoints:
+          - lb_endpoints:
+              - endpoint:
+                  address:
+                    socket_address:
+                      address: demo-frontend
+                      port_value: 8081
+
+admin:
+  address:
+    socket_address:
+      address: 0.0.0.0
+      port_value: 9901

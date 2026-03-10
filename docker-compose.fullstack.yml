@@ -1,0 +1,262 @@
+version: '3.8'
+
+services:
+  # ===========================================================================
+  # Core Infrastructure
+  # ===========================================================================
+
+  postgres:
+    image: postgres:15-alpine
+    container_name: wip-postgres
+    environment:
+      POSTGRES_DB: workload_identity
+      POSTGRES_USER: wip_user
+      POSTGRES_PASSWORD: wip_password
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+      - ./database/init.sql:/docker-entrypoint-initdb.d/01-init.sql:ro
+      - ./database/schemas/002-policy-templates.sql:/docker-entrypoint-initdb.d/02-policy-templates.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U wip_user -d workload_identity"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  opa:
+    image: openpolicyagent/opa:latest
+    container_name: wip-opa
+    ports:
+      - "8181:8181"
+    volumes:
+      - ./services/opa/policies:/policies
+    command:
+      - "run"
+      - "--server"
+      - "--addr=0.0.0.0:8181"
+      - "--log-level=info"
+      - "/policies"
+    healthcheck:
+      test: ["CMD", "/opa", "eval", "true"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+
+  vault:
+    image: hashicorp/vault:latest
+    container_name: wip-vault
+    ports:
+      - "8200:8200"
+    environment:
+      VAULT_DEV_ROOT_TOKEN_ID: root-token
+      VAULT_DEV_LISTEN_ADDRESS: 0.0.0.0:8200
+      VAULT_ADDR: http://127.0.0.1:8200
+    cap_add:
+      - IPC_LOCK
+    healthcheck:
+      test: ["CMD", "vault", "status"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+
+  # ===========================================================================
+  # Core Services
+  # ===========================================================================
+
+  policy-sync-service:
+    build: ./services/policy-sync-service
+    container_name: wip-policy-sync
+    ports:
+      - "3001:3001"
+    environment:
+      PORT: 3001
+      DATABASE_URL: postgresql://wip_user:wip_password@postgres:5432/workload_identity
+      OPA_URL: http://opa:8181
+      WEBHOOK_SECRET: ${WEBHOOK_SECRET}
+      SYNC_METHOD: ${SYNC_METHOD:-hybrid}
+      POLL_INTERVAL: ${POLL_INTERVAL:-30000}
+    depends_on:
+      postgres:
+        condition: service_healthy
+      opa:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "wget --spider -q http://localhost:3001/health || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+    restart: unless-stopped
+
+  token-service:
+    build: ./services/token-service
+    container_name: wip-token-service
+    ports:
+      - "3000:3000"
+    environment:
+      PORT: 3000
+      OPA_URL: http://opa:8181
+      JWT_SECRET: dev-secret-change-in-production
+      DATABASE_URL: postgresql://wip_user:wip_password@postgres:5432/workload_identity
+    depends_on:
+      postgres:
+        condition: service_healthy
+      opa:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "wget --spider -q http://localhost:3000/health || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+    restart: unless-stopped
+
+  credential-broker:
+    build: ./services/credential-broker
+    container_name: wip-credential-broker
+    ports:
+      - "3002:3002"
+    environment:
+      PORT: 3002
+      OPA_URL: http://opa:8181
+      VAULT_ADDR: http://vault:8200
+      VAULT_TOKEN: root-token
+      DATABASE_URL: postgresql://wip_user:wip_password@postgres:5432/workload_identity
+    depends_on:
+      postgres:
+        condition: service_healthy
+      opa:
+        condition: service_healthy
+      vault:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "wget --spider -q http://localhost:3002/health || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+    restart: unless-stopped
+
+  audit-service:
+    build: ./services/audit-service
+    container_name: wip-audit-service
+    ports:
+      - "3003:3003"
+    environment:
+      PORT: 3003
+      DATABASE_URL: postgresql://wip_user:wip_password@postgres:5432/workload_identity
+    depends_on:
+      postgres:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "wget --spider -q http://localhost:3003/health || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+    restart: unless-stopped
+
+  discovery-service:
+    build: ./services/discovery-service
+    container_name: wip-discovery
+    ports:
+      - "3004:3003"
+    environment:
+      PORT: 3003
+      DATABASE_URL: postgresql://wip_user:wip_password@postgres:5432/workload_identity
+      DISCOVERY_INTERVAL: 300000
+      PROTOCOL_ACTIVE_PROBE: "true"
+      SPIRE_TRUST_DOMAIN: company.com
+      AWS_ACCESS_KEY_ID: ${AWS_ACCESS_KEY_ID}
+      AWS_SECRET_ACCESS_KEY: ${AWS_SECRET_ACCESS_KEY}
+      AWS_DEFAULT_REGION: us-east-1
+      VAULT_TOKEN: root-token
+      VAULT_ADDR: http://vault:8200
+      TOKEN_SERVICE_URL: http://token-service:3000
+      GATEWAY_PROXY_URL: http://relay-service:3005/gateway/proxy
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      - ~/.kube:/root/.kube:ro
+    depends_on:
+      postgres:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "wget --spider -q http://localhost:3003/health || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+    restart: unless-stopped
+    networks:
+      - default
+      - spoke-net
+
+  relay-service:
+    build: ./services/relay-service
+    container_name: wip-relay
+    ports:
+      - "3005:3005"
+    environment:
+      PORT: 3005
+      ENVIRONMENT_NAME: local-docker
+      ENVIRONMENT_TYPE: docker
+      REGION: local
+      CLUSTER_ID: local-docker
+      CENTRAL_CONTROL_PLANE_URL: ""
+      LOCAL_POLICY_ENGINE_URL: http://policy-sync-service:3001
+      POLICY_SYNC_INTERVAL_MS: "30000"
+      AUDIT_FLUSH_INTERVAL_MS: "10000"
+    depends_on:
+      - policy-sync-service
+    healthcheck:
+      test: ["CMD-SHELL", "wget --spider -q http://127.0.0.1:3005/health || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+    restart: unless-stopped
+
+  web:
+    build:
+      context: ./web/workload-identity-manager
+      args:
+        VITE_API_URL: ""
+    container_name: wip-web
+    ports:
+      - "3100:3100"
+    depends_on:
+      - policy-sync-service
+      - discovery-service
+      - relay-service
+    restart: unless-stopped
+
+  decision-generator:
+    build: ./services/decision-generator
+    container_name: wip-decision-generator
+    environment:
+      RELAY_URL: http://relay-service:3005
+      POLICY_ENGINE_URL: http://policy-sync-service:3001
+      INTERVAL_MS: "30000"
+      STARTUP_DELAY_MS: "45000"
+    depends_on:
+      - relay-service
+      - policy-sync-service
+    restart: unless-stopped
+
+  # ===========================================================================
+  # Demo Agents: MOVED to separate project (wid-demo-agents)
+  # ===========================================================================
+  # Run agents from: cd ../wid-demo-agents && docker compose up --build
+  # Agents join the same network via external network config.
+
+volumes:
+  postgres-data:
+
+networks:
+  default:
+    name: workload-identity-network
+  spoke-net:
+    external: true
+    name: wid-spoke-network

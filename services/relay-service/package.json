@@ -1,0 +1,14 @@
+{
+  "name": "@wid/relay-service",
+  "version": "1.0.0",
+  "description": "WID Relay — local policy cache and audit forwarder for hub-and-spoke deployment",
+  "main": "src/index.js",
+  "scripts": {
+    "start": "node src/index.js",
+    "test": "node --test src/*.test.js"
+  },
+  "dependencies": {
+    "express": "^4.18.2",
+    "cors": "^2.8.5"
+  }
+}

@@ -1,0 +1,473 @@
+# =============================================================================
+# WID Platform — Kubernetes Manifests
+# =============================================================================
+# Apply after Terraform: kubectl apply -f k8s-manifests.yaml
+# Variables like ${...} are replaced by the deploy script before applying.
+# =============================================================================
+
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: wid-system
+  labels:
+    app.kubernetes.io/part-of: wid
+
+---
+# ── Service Accounts (IRSA-annotated) ──
+
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: policy-engine
+  namespace: wid-system
+  annotations:
+    eks.amazonaws.com/role-arn: ${POLICY_ENGINE_ROLE_ARN}
+
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: token-service
+  namespace: wid-system
+  annotations:
+    eks.amazonaws.com/role-arn: ${POLICY_ENGINE_ROLE_ARN}
+
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: credential-broker
+  namespace: wid-system
+  annotations:
+    eks.amazonaws.com/role-arn: ${POLICY_ENGINE_ROLE_ARN}
+
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: discovery-service
+  namespace: wid-system
+  annotations:
+    eks.amazonaws.com/role-arn: ${POLICY_ENGINE_ROLE_ARN}
+
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: relay-service
+  namespace: wid-system
+  annotations:
+    eks.amazonaws.com/role-arn: ${POLICY_ENGINE_ROLE_ARN}
+
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: web-ui
+  namespace: wid-system
+
+---
+# ── ConfigMap ──
+
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: wid-config
+  namespace: wid-system
+data:
+  ENVIRONMENT_NAME: "aws-production"
+  ENVIRONMENT_TYPE: "eks"
+  REGION: "${AWS_REGION}"
+  CLUSTER_ID: "${EKS_CLUSTER_NAME}"
+  TRUST_DOMAIN: "company.com"
+  OPA_COMPILER: "node"
+
+---
+# ── Deployments ──
+
+# Policy Engine
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: policy-engine
+  namespace: wid-system
+spec:
+  replicas: 2
+  selector:
+    matchLabels: { app: policy-engine }
+  template:
+    metadata:
+      labels: { app: policy-engine }
+    spec:
+      serviceAccountName: policy-engine
+      topologySpreadConstraints:
+        - maxSkew: 1
+          topologyKey: topology.kubernetes.io/zone
+          whenUnsatisfiable: DoNotSchedule
+          labelSelector:
+            matchLabels: { app: policy-engine }
+      containers:
+        - name: policy-engine
+          image: ${ECR_REGISTRY}/wid/policy-engine:latest
+          ports:
+            - containerPort: 3001
+          env:
+            - name: PORT
+              value: "3001"
+            - name: DATABASE_URL
+              valueFrom:
+                secretKeyRef:
+                  name: wid-db-credentials
+                  key: url
+            - name: OPA_COMPILER
+              value: "node"
+          resources:
+            requests: { cpu: "100m", memory: "256Mi" }
+            limits: { cpu: "500m", memory: "512Mi" }
+          readinessProbe:
+            httpGet: { path: /health, port: 3001 }
+            initialDelaySeconds: 5
+          livenessProbe:
+            httpGet: { path: /health, port: 3001 }
+            initialDelaySeconds: 10
+
+---
+# Token Service
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: token-service
+  namespace: wid-system
+spec:
+  replicas: 2
+  selector:
+    matchLabels: { app: token-service }
+  template:
+    metadata:
+      labels: { app: token-service }
+    spec:
+      serviceAccountName: token-service
+      containers:
+        - name: token-service
+          image: ${ECR_REGISTRY}/wid/token-service:latest
+          ports:
+            - containerPort: 3000
+          env:
+            - name: PORT
+              value: "3000"
+            - name: DATABASE_URL
+              valueFrom:
+                secretKeyRef:
+                  name: wid-db-credentials
+                  key: url
+          resources:
+            requests: { cpu: "100m", memory: "128Mi" }
+            limits: { cpu: "250m", memory: "256Mi" }
+          readinessProbe:
+            httpGet: { path: /health, port: 3000 }
+
+---
+# Credential Broker
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: credential-broker
+  namespace: wid-system
+spec:
+  replicas: 2
+  selector:
+    matchLabels: { app: credential-broker }
+  template:
+    metadata:
+      labels: { app: credential-broker }
+    spec:
+      serviceAccountName: credential-broker
+      containers:
+        - name: credential-broker
+          image: ${ECR_REGISTRY}/wid/credential-broker:latest
+          ports:
+            - containerPort: 3002
+          env:
+            - name: PORT
+              value: "3002"
+            - name: DATABASE_URL
+              valueFrom:
+                secretKeyRef:
+                  name: wid-db-credentials
+                  key: url
+          resources:
+            requests: { cpu: "100m", memory: "128Mi" }
+            limits: { cpu: "250m", memory: "256Mi" }
+
+---
+# Discovery Service
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: discovery-service
+  namespace: wid-system
+spec:
+  replicas: 2
+  selector:
+    matchLabels: { app: discovery-service }
+  template:
+    metadata:
+      labels: { app: discovery-service }
+    spec:
+      serviceAccountName: discovery-service
+      containers:
+        - name: discovery-service
+          image: ${ECR_REGISTRY}/wid/discovery-service:latest
+          ports:
+            - containerPort: 3003
+          env:
+            - name: PORT
+              value: "3003"
+            - name: DATABASE_URL
+              valueFrom:
+                secretKeyRef:
+                  name: wid-db-credentials
+                  key: url
+            - name: SPIRE_TRUST_DOMAIN
+              value: "company.com"
+            - name: AWS_REGION
+              value: "${AWS_REGION}"
+          resources:
+            requests: { cpu: "100m", memory: "256Mi" }
+            limits: { cpu: "500m", memory: "512Mi" }
+
+---
+# Relay Service (Central Hub)
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: relay-service
+  namespace: wid-system
+spec:
+  replicas: 3
+  selector:
+    matchLabels: { app: relay-service }
+  template:
+    metadata:
+      labels: { app: relay-service }
+    spec:
+      serviceAccountName: relay-service
+      topologySpreadConstraints:
+        - maxSkew: 1
+          topologyKey: topology.kubernetes.io/zone
+          whenUnsatisfiable: DoNotSchedule
+          labelSelector:
+            matchLabels: { app: relay-service }
+      containers:
+        - name: relay-service
+          image: ${ECR_REGISTRY}/wid/relay-service:latest
+          ports:
+            - containerPort: 3005
+          env:
+            - name: PORT
+              value: "3005"
+            - name: ENVIRONMENT_NAME
+              value: "aws-production"
+            - name: ENVIRONMENT_TYPE
+              value: "eks"
+            - name: REGION
+              value: "${AWS_REGION}"
+            - name: CLUSTER_ID
+              value: "${EKS_CLUSTER_NAME}"
+            - name: CENTRAL_CONTROL_PLANE_URL
+              value: ""
+            - name: LOCAL_POLICY_ENGINE_URL
+              value: "http://policy-engine:3001"
+          resources:
+            requests: { cpu: "100m", memory: "128Mi" }
+            limits: { cpu: "500m", memory: "256Mi" }
+          readinessProbe:
+            httpGet: { path: /health, port: 3005 }
+
+---
+# Web UI
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: web-ui
+  namespace: wid-system
+spec:
+  replicas: 2
+  selector:
+    matchLabels: { app: web-ui }
+  template:
+    metadata:
+      labels: { app: web-ui }
+    spec:
+      serviceAccountName: web-ui
+      containers:
+        - name: web-ui
+          image: ${ECR_REGISTRY}/wid/web-ui:latest
+          ports:
+            - containerPort: 3100
+          resources:
+            requests: { cpu: "50m", memory: "64Mi" }
+            limits: { cpu: "200m", memory: "128Mi" }
+
+---
+# ── Services ──
+
+apiVersion: v1
+kind: Service
+metadata:
+  name: policy-engine
+  namespace: wid-system
+spec:
+  selector: { app: policy-engine }
+  ports: [{ port: 3001, targetPort: 3001 }]
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: token-service
+  namespace: wid-system
+spec:
+  selector: { app: token-service }
+  ports: [{ port: 3000, targetPort: 3000 }]
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: credential-broker
+  namespace: wid-system
+spec:
+  selector: { app: credential-broker }
+  ports: [{ port: 3002, targetPort: 3002 }]
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: discovery-service
+  namespace: wid-system
+spec:
+  selector: { app: discovery-service }
+  ports: [{ port: 3003, targetPort: 3003 }]
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: relay-service
+  namespace: wid-system
+spec:
+  selector: { app: relay-service }
+  ports: [{ port: 3005, targetPort: 3005 }]
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: web-ui
+  namespace: wid-system
+spec:
+  selector: { app: web-ui }
+  ports: [{ port: 3100, targetPort: 3100 }]
+
+---
+# ── ALB Ingress — exposes relay + web UI ──
+
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: wid-ingress
+  namespace: wid-system
+  annotations:
+    kubernetes.io/ingress.class: alb
+    alb.ingress.kubernetes.io/scheme: internet-facing
+    alb.ingress.kubernetes.io/target-type: ip
+    alb.ingress.kubernetes.io/listen-ports: '[{"HTTP": 80}]'
+    alb.ingress.kubernetes.io/healthcheck-path: /health
+spec:
+  rules:
+    - http:
+        paths:
+          - path: /api/v1/relay
+            pathType: Prefix
+            backend:
+              service:
+                name: relay-service
+                port: { number: 3005 }
+          - path: /api/v1/policies
+            pathType: Prefix
+            backend:
+              service:
+                name: policy-engine
+                port: { number: 3001 }
+          - path: /api/v1/access
+            pathType: Prefix
+            backend:
+              service:
+                name: policy-engine
+                port: { number: 3001 }
+          - path: /api/v1/workloads
+            pathType: Prefix
+            backend:
+              service:
+                name: discovery-service
+                port: { number: 3003 }
+          - path: /health
+            pathType: Exact
+            backend:
+              service:
+                name: relay-service
+                port: { number: 3005 }
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: web-ui
+                port: { number: 3100 }
+
+---
+# ── HPA ──
+
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: relay-hpa
+  namespace: wid-system
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: relay-service
+  minReplicas: 3
+  maxReplicas: 20
+  metrics:
+    - type: Resource
+      resource:
+        name: cpu
+        target: { type: Utilization, averageUtilization: 70 }
+
+---
+# ── PodDisruptionBudgets ──
+
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: relay-pdb
+  namespace: wid-system
+spec:
+  minAvailable: 2
+  selector:
+    matchLabels: { app: relay-service }
+
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: policy-engine-pdb
+  namespace: wid-system
+spec:
+  minAvailable: 1
+  selector:
+    matchLabels: { app: policy-engine }

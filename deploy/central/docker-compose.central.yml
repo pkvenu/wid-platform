@@ -1,0 +1,149 @@
+# =============================================================================
+# WID Platform — Central Control Plane
+# =============================================================================
+#
+# Run this on AWS (EC2, ECS, or EKS).
+# This is the single source of truth for policies, workloads, and audit events.
+#
+# Usage:
+#   docker compose -f docker-compose.central.yml up --build -d
+#
+# Services:
+#   postgres        — State store (policies, workloads, decisions)
+#   vault           — Secrets engine for credential brokering
+#   policy-engine   — NHI governance (34 templates, Rego compiler)
+#   token-service   — JIT token exchange, OBO chain tracking
+#   credential-broker — Vault/AWS/GCP credential provider
+#   discovery-service — NHI auto-discovery (K8s, Docker, AWS, Vault)
+#   relay           — Hub-and-spoke federation (central hub)
+#   web             — Unified dashboard (all environments)
+#
+# =============================================================================
+
+services:
+  # ── Infrastructure ──
+  postgres:
+    image: postgres:15-alpine
+    restart: always
+    environment:
+      POSTGRES_DB: workload_identity
+      POSTGRES_USER: wid_user
+      POSTGRES_PASSWORD: wid_password
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+      - ../../database/init.sql:/docker-entrypoint-initdb.d/01-init.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U wid_user -d workload_identity"]
+      interval: 3s
+      timeout: 2s
+      retries: 15
+
+  vault:
+    image: hashicorp/vault:1.15
+    restart: always
+    cap_add: ["IPC_LOCK"]
+    environment:
+      VAULT_DEV_ROOT_TOKEN_ID: dev-root-token
+      VAULT_DEV_LISTEN_ADDRESS: 0.0.0.0:8200
+    ports:
+      - "8200:8200"
+
+  # ── Control Plane Services ──
+  policy-engine:
+    build:
+      context: ../../services/policy-sync-service
+    restart: on-failure
+    ports:
+      - "3001:3001"
+    environment:
+      PORT: 3001
+      DATABASE_URL: postgresql://wid_user:wid_password@postgres:5432/workload_identity
+      OPA_COMPILER: "node"
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  token-service:
+    build:
+      context: ../../services/token-service
+    restart: on-failure
+    ports:
+      - "3000:3000"
+    environment:
+      PORT: 3000
+      DATABASE_URL: postgresql://wid_user:wid_password@postgres:5432/workload_identity
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  credential-broker:
+    build:
+      context: ../../services/credential-broker
+    restart: on-failure
+    ports:
+      - "3002:3002"
+    environment:
+      PORT: 3002
+      DATABASE_URL: postgresql://wid_user:wid_password@postgres:5432/workload_identity
+      VAULT_ADDR: http://vault:8200
+      VAULT_TOKEN: dev-root-token
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  discovery-service:
+    build:
+      context: ../../services/discovery-service
+    restart: on-failure
+    ports:
+      - "3004:3003"
+    environment:
+      PORT: 3003
+      DATABASE_URL: postgresql://wid_user:wid_password@postgres:5432/workload_identity
+      SPIRE_TRUST_DOMAIN: company.com
+      VAULT_TOKEN: dev-root-token
+      VAULT_ADDR: http://vault:8200
+      TOKEN_SERVICE_URL: http://token-service:3000
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  # ── Federation Hub ──
+  relay:
+    build:
+      context: ../../services/relay-service
+    restart: on-failure
+    ports:
+      - "3005:3005"
+    environment:
+      PORT: 3005
+      ENVIRONMENT_NAME: aws-central
+      ENVIRONMENT_TYPE: aws
+      REGION: us-east-1
+      CLUSTER_ID: central-control-plane
+      # This IS the central — no upstream URL
+      CENTRAL_CONTROL_PLANE_URL: ""
+      LOCAL_POLICY_ENGINE_URL: http://policy-engine:3001
+      POLICY_SYNC_INTERVAL_MS: "30000"
+      AUDIT_FLUSH_INTERVAL_MS: "10000"
+    depends_on:
+      - policy-engine
+
+  # ── Web UI (Unified Dashboard) ──
+  web:
+    build:
+      context: ../../web/workload-identity-manager
+    restart: on-failure
+    ports:
+      - "3100:3100"
+    depends_on:
+      - policy-engine
+      - discovery-service
+      - relay
+
+volumes:
+  pgdata:

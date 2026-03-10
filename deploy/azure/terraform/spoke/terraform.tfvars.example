@@ -1,0 +1,38 @@
+# =============================================================================
+# Example tfvars for Azure Spoke deployment
+# Copy to terraform.tfvars and adjust values
+# =============================================================================
+
+project_name     = "wid"
+environment      = "dev"
+azure_region     = "eastus"
+environment_name = "azure-spoke-dev"
+
+# GCP central control plane URL (hub relay)
+central_url     = "http://34.120.74.81"
+central_api_key = ""  # Optional: set if hub requires API key auth
+
+# Azure Container Registry (must be globally unique)
+acr_name = "widspoke"
+
+# Resource sizing
+relay_cpu      = 0.25
+relay_memory   = "0.5Gi"
+gateway_cpu    = 0.25
+gateway_memory = "0.5Gi"
+
+# Edge gateway configurations
+gateway_configs = {
+  "servicenow" = {
+    app_host      = "servicenow-it-agent"
+    app_port      = 6001
+    workload_name = "servicenow-it-agent"
+    external_port = 8001
+  }
+  "billing" = {
+    app_host      = "billing-agent"
+    app_port      = 6021
+    workload_name = "billing-agent"
+    external_port = 8021
+  }
+}

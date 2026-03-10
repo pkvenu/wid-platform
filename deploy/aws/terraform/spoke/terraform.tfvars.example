@@ -1,0 +1,63 @@
+# =============================================================================
+# Example tfvars for AWS Spoke deployment
+# Copy to terraform.tfvars and adjust values
+# =============================================================================
+
+project_name     = "wid"
+environment      = "dev"
+aws_region       = "us-east-1"
+environment_name = "aws-spoke-dev"
+
+# GCP central control plane URL (hub relay)
+central_url     = "http://34.120.74.81"
+central_api_key = ""  # Optional: set if hub requires API key auth
+
+# VPC
+vpc_cidr = "10.1.0.0/16"
+
+# Resource sizing (256 CPU = 0.25 vCPU)
+relay_cpu      = 256
+relay_memory   = 512
+gateway_cpu    = 256
+gateway_memory = 256
+
+# Edge gateway configurations
+# Customize based on which agents are deployed in this spoke
+gateway_configs = {
+  "servicenow" = {
+    app_host      = "servicenow-it-agent"
+    app_port      = 6001
+    workload_name = "servicenow-it-agent"
+    external_port = 8001
+  }
+  "github-actions" = {
+    app_host      = "github-actions-agent"
+    app_port      = 6010
+    workload_name = "github-actions-agent"
+    external_port = 8010
+  }
+  "code-review" = {
+    app_host      = "code-review-agent"
+    app_port      = 6011
+    workload_name = "code-review-agent"
+    external_port = 8011
+  }
+  "security-scanner" = {
+    app_host      = "security-scanner-agent"
+    app_port      = 6012
+    workload_name = "security-scanner-agent"
+    external_port = 8012
+  }
+  "billing" = {
+    app_host      = "billing-agent"
+    app_port      = 6021
+    workload_name = "billing-agent"
+    external_port = 8021
+  }
+  "crm" = {
+    app_host      = "crm-agent"
+    app_port      = 6022
+    workload_name = "crm-agent"
+    external_port = 8022
+  }
+}

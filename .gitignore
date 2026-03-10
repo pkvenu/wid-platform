@@ -1,0 +1,75 @@
+# =============================================================================
+# WID Platform — .gitignore
+# =============================================================================
+
+# ── Dependencies ──
+node_modules/
+package-lock.json
+yarn.lock
+pnpm-lock.yaml
+
+# ── Environment & Secrets ──
+.env
+.env.local
+.env.*.local
+.env.development
+.env.production
+.env.test
+
+# ── Terraform (State contains secrets — NEVER commit) ──
+terraform.tfstate
+terraform.tfstate.*
+.terraform/
+.terraform.lock.hcl
+*.tfvars
+!*.tfvars.example
+tfplan
+*.tfplan
+
+# ── Credential & Key Files ──
+*.pem
+*.p12
+*.pfx
+*.jks
+*-key.json
+service-account*.json
+.git-credentials
+.netrc
+
+# ── Build Outputs ──
+dist/
+build/
+.next/
+out/
+*.tgz
+
+# ── Logs & Runtime ──
+logs/
+*.log
+npm-debug.log*
+yarn-debug.log*
+
+# ── IDE & Editor ──
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+*.sublime-*
+
+# ── OS Files ──
+.DS_Store
+.DS_Store?
+._*
+Thumbs.db
+
+# ── Proto (generated locally by ext-authz-adapter) ──
+proto/
+
+# ── Stray / temp files ──
+bash
+
+# ── Claude Code (session-specific, not project config) ──
+.claude/plans/
+.claude/todos/
+.claude/settings.local.json

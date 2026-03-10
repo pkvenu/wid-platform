@@ -1,0 +1,36 @@
+{
+  "name": "credential-broker",
+  "version": "2.0.0",
+  "description": "Production Credential Injection Proxy with Plugin-Based Provider Architecture",
+  "main": "src/index.js",
+  "scripts": {
+    "start": "node src/index.js",
+    "dev": "nodemon src/index.js",
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "keywords": [
+    "credential-injection",
+    "zero-secret",
+    "vault",
+    "secrets-management",
+    "proxy"
+  ],
+  "dependencies": {
+    "express": "^4.18.2",
+    "axios": "^1.6.0",
+    "jsonwebtoken": "^9.0.2",
+    "pg": "^8.11.3",
+    "node-cache": "^5.1.2",
+    "node-vault": "^0.10.2",
+    "@aws-sdk/client-secrets-manager": "^3.450.0",
+    "@azure/keyvault-secrets": "^4.7.0",
+    "@azure/identity": "^4.0.0",
+    "@google-cloud/secret-manager": "^5.0.0"
+  },
+  "devDependencies": {
+    "nodemon": "^3.0.1"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  }
+}

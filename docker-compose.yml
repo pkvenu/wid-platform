@@ -1,0 +1,306 @@
+# =============================================================================
+# WID Platform — Docker Spoke (Data Plane Only)
+# =============================================================================
+#
+# Connects to the GCP central control plane via the relay hub.
+# No local database, no local UI, no duplicate core services.
+#
+# Architecture:
+#   relay (spoke) ──→ GCP relay (hub) at $CENTRAL_URL
+#   edge-gateway(s) ──→ local relay ──→ GCP central
+#
+# Usage:
+#   docker compose up --build
+#   # Then start demo agents from the wid-demo-agents project:
+#   cd ../wid-demo-agents && docker compose up --build
+#
+# What this runs:
+#   relay                    — Spoke: policy cache + audit forwarder → GCP hub
+#   7 edge-gateways          — Sidecar proxies, one per agent
+#
+# Demo agents run from the separate wid-demo-agents project,
+# joining the wid-spoke-network created here.
+#
+# =============================================================================
+
+services:
+
+  # ══════════════════════════════════════════════════════════════
+  # WID Relay (SPOKE — connects to GCP central control plane)
+  # ══════════════════════════════════════════════════════════════
+  relay:
+    build:
+      context: ./services/relay-service
+    container_name: wid-spoke-relay
+    restart: on-failure
+    ports:
+      - "3005:3005"
+    environment:
+      PORT: 3005
+      ENVIRONMENT_NAME: local-docker
+      ENVIRONMENT_TYPE: docker
+      REGION: local
+      CLUSTER_ID: docker-desktop
+      # Connect to GCP central control plane (hub)
+      CENTRAL_CONTROL_PLANE_URL: ${CENTRAL_URL:-http://34.120.74.81}
+      CENTRAL_API_KEY: ${CENTRAL_API_KEY:-}
+      # Sync settings — faster for local dev
+      POLICY_SYNC_INTERVAL_MS: "15000"
+      AUDIT_FLUSH_INTERVAL_MS: "5000"
+    healthcheck:
+      test: ["CMD-SHELL", "wget --spider -q http://127.0.0.1:3005/health || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+    networks:
+      - spoke-net
+
+  # ══════════════════════════════════════════════════════════════
+  # Edge Gateways — One per agent (sidecar pattern)
+  # All point to the local spoke relay for policy + token + creds
+  # Agents run from wid-demo-agents project on the same network
+  # ══════════════════════════════════════════════════════════════
+
+  gw-servicenow:
+    build:
+      context: .
+      dockerfile: services/edge-gateway/Dockerfile
+    container_name: wid-gw-servicenow
+    restart: on-failure
+    ports:
+      - "8001:15001"       # Access servicenow-it-agent through here
+      - "15100:15000"      # Admin/metrics
+    environment:
+      OUTBOUND_PORT: 15001
+      INBOUND_PORT: 15006
+      ADMIN_PORT: 15000
+      APP_PORT: 6001
+      APP_HOST: servicenow-it-agent
+      WORKLOAD_NAME: servicenow-it-agent
+      WORKLOAD_NS: demo-blended
+      TRUST_DOMAIN: company.com
+      DEFAULT_MODE: audit
+      FAIL_BEHAVIOR: open
+      POLICY_SERVICE_URL: http://relay:3005
+      TOKEN_SERVICE_URL: http://relay:3005
+      BROKER_URL: http://relay:3005
+      LOG_LEVEL: info
+      STRUCTURED_LOGS: "true"
+    depends_on:
+      - relay
+    networks:
+      - spoke-net
+
+  gw-github-actions:
+    build:
+      context: .
+      dockerfile: services/edge-gateway/Dockerfile
+    container_name: wid-gw-github-actions
+    restart: on-failure
+    ports:
+      - "8010:15001"
+      - "15110:15000"
+    environment:
+      OUTBOUND_PORT: 15001
+      INBOUND_PORT: 15006
+      ADMIN_PORT: 15000
+      APP_PORT: 6010
+      APP_HOST: github-actions-agent
+      WORKLOAD_NAME: github-actions-agent
+      WORKLOAD_NS: demo-blended
+      TRUST_DOMAIN: company.com
+      DEFAULT_MODE: audit
+      FAIL_BEHAVIOR: open
+      POLICY_SERVICE_URL: http://relay:3005
+      TOKEN_SERVICE_URL: http://relay:3005
+      BROKER_URL: http://relay:3005
+      LOG_LEVEL: info
+      STRUCTURED_LOGS: "true"
+    depends_on:
+      - relay
+    networks:
+      - spoke-net
+
+  gw-code-review:
+    build:
+      context: .
+      dockerfile: services/edge-gateway/Dockerfile
+    container_name: wid-gw-code-review
+    restart: on-failure
+    ports:
+      - "8011:15001"
+      - "15111:15000"
+    environment:
+      OUTBOUND_PORT: 15001
+      INBOUND_PORT: 15006
+      ADMIN_PORT: 15000
+      APP_PORT: 6011
+      APP_HOST: code-review-agent
+      WORKLOAD_NAME: code-review-agent
+      WORKLOAD_NS: demo-blended
+      TRUST_DOMAIN: company.com
+      DEFAULT_MODE: audit
+      FAIL_BEHAVIOR: open
+      POLICY_SERVICE_URL: http://relay:3005
+      TOKEN_SERVICE_URL: http://relay:3005
+      BROKER_URL: http://relay:3005
+      LOG_LEVEL: info
+      STRUCTURED_LOGS: "true"
+    depends_on:
+      - relay
+    networks:
+      - spoke-net
+
+  gw-security-scanner:
+    build:
+      context: .
+      dockerfile: services/edge-gateway/Dockerfile
+    container_name: wid-gw-security-scanner
+    restart: on-failure
+    ports:
+      - "8012:15001"
+      - "15112:15000"
+    environment:
+      OUTBOUND_PORT: 15001
+      INBOUND_PORT: 15006
+      ADMIN_PORT: 15000
+      APP_PORT: 6012
+      APP_HOST: security-scanner-agent
+      WORKLOAD_NAME: security-scanner-agent
+      WORKLOAD_NS: demo-blended
+      TRUST_DOMAIN: company.com
+      DEFAULT_MODE: audit
+      FAIL_BEHAVIOR: open
+      POLICY_SERVICE_URL: http://relay:3005
+      TOKEN_SERVICE_URL: http://relay:3005
+      BROKER_URL: http://relay:3005
+      LOG_LEVEL: info
+      STRUCTURED_LOGS: "true"
+    depends_on:
+      - relay
+    networks:
+      - spoke-net
+
+  gw-zendesk:
+    build:
+      context: .
+      dockerfile: services/edge-gateway/Dockerfile
+    container_name: wid-gw-zendesk
+    restart: on-failure
+    ports:
+      - "8020:15001"
+      - "15120:15000"
+    environment:
+      OUTBOUND_PORT: 15001
+      INBOUND_PORT: 15006
+      ADMIN_PORT: 15000
+      APP_PORT: 6020
+      APP_HOST: zendesk-ai-orchestrator
+      WORKLOAD_NAME: zendesk-ai-orchestrator
+      WORKLOAD_NS: demo-blended
+      TRUST_DOMAIN: company.com
+      DEFAULT_MODE: audit
+      FAIL_BEHAVIOR: open
+      POLICY_SERVICE_URL: http://relay:3005
+      TOKEN_SERVICE_URL: http://relay:3005
+      BROKER_URL: http://relay:3005
+      LOG_LEVEL: info
+      STRUCTURED_LOGS: "true"
+    depends_on:
+      - relay
+    networks:
+      - spoke-net
+
+  gw-billing:
+    build:
+      context: .
+      dockerfile: services/edge-gateway/Dockerfile
+    container_name: wid-gw-billing
+    restart: on-failure
+    ports:
+      - "8021:15001"
+      - "15121:15000"
+    environment:
+      OUTBOUND_PORT: 15001
+      INBOUND_PORT: 15006
+      ADMIN_PORT: 15000
+      APP_PORT: 6021
+      APP_HOST: billing-agent
+      WORKLOAD_NAME: billing-agent
+      WORKLOAD_NS: demo-blended
+      TRUST_DOMAIN: company.com
+      DEFAULT_MODE: audit
+      FAIL_BEHAVIOR: open
+      POLICY_SERVICE_URL: http://relay:3005
+      TOKEN_SERVICE_URL: http://relay:3005
+      BROKER_URL: http://relay:3005
+      LOG_LEVEL: info
+      STRUCTURED_LOGS: "true"
+    depends_on:
+      - relay
+    networks:
+      - spoke-net
+
+  gw-crm:
+    build:
+      context: .
+      dockerfile: services/edge-gateway/Dockerfile
+    container_name: wid-gw-crm
+    restart: on-failure
+    ports:
+      - "8022:15001"
+      - "15122:15000"
+    environment:
+      OUTBOUND_PORT: 15001
+      INBOUND_PORT: 15006
+      ADMIN_PORT: 15000
+      APP_PORT: 6022
+      APP_HOST: crm-agent
+      WORKLOAD_NAME: crm-agent
+      WORKLOAD_NS: demo-blended
+      TRUST_DOMAIN: company.com
+      DEFAULT_MODE: audit
+      FAIL_BEHAVIOR: open
+      POLICY_SERVICE_URL: http://relay:3005
+      TOKEN_SERVICE_URL: http://relay:3005
+      BROKER_URL: http://relay:3005
+      LOG_LEVEL: info
+      STRUCTURED_LOGS: "true"
+    depends_on:
+      - relay
+    networks:
+      - spoke-net
+
+  gw-mcp-server:
+    build:
+      context: .
+      dockerfile: services/edge-gateway/Dockerfile
+    container_name: wid-gw-mcp-server
+    restart: on-failure
+    ports:
+      - "8030:15001"
+      - "15130:15000"
+    environment:
+      OUTBOUND_PORT: 15001
+      INBOUND_PORT: 15006
+      ADMIN_PORT: 15000
+      APP_PORT: 6030
+      APP_HOST: mcp-server-agent
+      WORKLOAD_NAME: mcp-server-agent
+      WORKLOAD_NS: demo-blended
+      TRUST_DOMAIN: company.com
+      DEFAULT_MODE: audit
+      FAIL_BEHAVIOR: open
+      POLICY_SERVICE_URL: http://relay:3005
+      TOKEN_SERVICE_URL: http://relay:3005
+      BROKER_URL: http://relay:3005
+      LOG_LEVEL: info
+      STRUCTURED_LOGS: "true"
+    depends_on:
+      - relay
+    networks:
+      - spoke-net
+
+networks:
+  spoke-net:
+    name: wid-spoke-network

@@ -1,0 +1,18 @@
+{
+  "name": "ext-authz-adapter",
+  "version": "1.0.0",
+  "description": "Envoy ext_authz gRPC adapter — cloud/mesh deployment mode for Workload Identity Platform",
+  "main": "src/adapter.js",
+  "scripts": {
+    "start": "node src/adapter.js",
+    "test": "node --test test/adapter.test.js",
+    "docker:local": "docker compose -f deploy/local/docker-compose.yml up --build",
+    "docker:down": "docker compose -f deploy/local/docker-compose.yml down -v"
+  },
+  "dependencies": {
+    "@grpc/grpc-js": "^1.9.0",
+    "@grpc/proto-loader": "^0.7.0",
+    "@wid/core": "file:../../shared/data-plane-core"
+  },
+  "engines": { "node": ">=18.0.0" }
+}

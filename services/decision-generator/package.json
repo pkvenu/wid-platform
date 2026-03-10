@@ -1,0 +1,6 @@
+{
+  "name": "decision-generator",
+  "version": "1.0.0",
+  "description": "Generates real authorization decisions from WID service topology",
+  "main": "generate-decisions.js"
+}

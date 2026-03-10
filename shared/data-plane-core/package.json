@@ -1,0 +1,10 @@
+{
+  "name": "@wid/core",
+  "version": "1.0.0",
+  "description": "Shared data-plane core for Workload Identity Platform — used by ext-authz-adapter and edge-gateway",
+  "main": "src/core.js",
+  "scripts": {
+    "test": "node --test test/core.test.js"
+  },
+  "dependencies": {}
+}

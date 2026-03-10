@@ -1,0 +1,484 @@
+# =============================================================================
+# AWS EKS Deployment — Kubernetes Manifests
+# =============================================================================
+#
+# Deploy:   kubectl apply -f eks-manifests.yaml
+# Rollback: kubectl delete authorizationpolicy wid-protect -n <namespace>
+# =============================================================================
+
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: wid-system
+  labels:
+    istio-injection: enabled
+    app.kubernetes.io/part-of: wid-platform
+
+---
+# ══════════════════════════════════════════════════════
+# Service Accounts (IRSA)
+# ══════════════════════════════════════════════════════
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: ext-authz-adapter
+  namespace: wid-system
+  annotations:
+    eks.amazonaws.com/role-arn: arn:aws:iam::ACCOUNT_ID:role/wid-ext-authz-adapter-CLUSTER
+
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: wid-control-plane
+  namespace: wid-system
+  annotations:
+    eks.amazonaws.com/role-arn: arn:aws:iam::ACCOUNT_ID:role/wid-control-plane-CLUSTER
+
+---
+# ══════════════════════════════════════════════════════
+# ConfigMap — Adapter configuration
+# ══════════════════════════════════════════════════════
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: ext-authz-config
+  namespace: wid-system
+data:
+  DEPLOY_MODE: "aws"
+  GRPC_PORT: "9191"
+  ADMIN_PORT: "8080"
+  DEFAULT_MODE: "audit"
+  DEFAULT_FAIL_BEHAVIOR: "open"
+  CACHE_ENABLED: "true"
+  CACHE_TTL_MS: "30000"
+  CACHE_MAX_ENTRIES: "50000"
+  CRED_BUFFER_ENABLED: "true"
+  CRED_BUFFER_TTL_MS: "300000"
+  CP_TIMEOUT_MS: "300"
+  TOKEN_TIMEOUT_MS: "500"
+  MAX_CHAIN_DEPTH: "10"
+  LOG_LEVEL: "info"
+  STRUCTURED_LOGS: "true"
+  LOG_DECISIONS: "true"
+  CW_ENABLED: "true"
+  CW_LOG_GROUP: "/wid/ext-authz"
+  RATE_LIMIT_ENABLED: "false"
+  # Per-workload overrides (payment = enforce + fail-closed)
+  WORKLOAD_OVERRIDES: |
+    {}
+
+---
+# ══════════════════════════════════════════════════════
+# ext_authz Adapter Deployment
+# ══════════════════════════════════════════════════════
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: ext-authz-adapter
+  namespace: wid-system
+  labels:
+    app: ext-authz-adapter
+    version: v1
+spec:
+  replicas: 3
+  selector:
+    matchLabels:
+      app: ext-authz-adapter
+  template:
+    metadata:
+      labels:
+        app: ext-authz-adapter
+        version: v1
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "8080"
+        prometheus.io/path: "/metrics/prometheus"
+    spec:
+      serviceAccountName: ext-authz-adapter
+      terminationGracePeriodSeconds: 30
+      containers:
+        - name: adapter
+          image: ACCOUNT_ID.dkr.ecr.REGION.amazonaws.com/wid/ext-authz-adapter:latest
+          ports:
+            - containerPort: 9191
+              name: grpc
+              protocol: TCP
+            - containerPort: 8080
+              name: admin
+              protocol: TCP
+          envFrom:
+            - configMapRef:
+                name: ext-authz-config
+          env:
+            - name: POLICY_SERVICE_URL
+              value: "http://policy-engine.wid-system.svc.cluster.local:3001"
+            - name: TOKEN_SERVICE_URL
+              value: "http://token-service.wid-system.svc.cluster.local:3000"
+            - name: BROKER_URL
+              value: "http://credential-broker.wid-system.svc.cluster.local:3002"
+            - name: AWS_REGION
+              value: "us-east-1"
+          resources:
+            requests:
+              cpu: 100m
+              memory: 128Mi
+            limits:
+              cpu: 500m
+              memory: 256Mi
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: admin
+            initialDelaySeconds: 5
+            periodSeconds: 10
+            failureThreshold: 3
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: admin
+            initialDelaySeconds: 3
+            periodSeconds: 5
+            failureThreshold: 5
+          startupProbe:
+            httpGet:
+              path: /healthz
+              port: admin
+            failureThreshold: 12
+            periodSeconds: 5
+          securityContext:
+            runAsNonRoot: true
+            runAsUser: 1337
+            readOnlyRootFilesystem: false  # needs to write proto files
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ["ALL"]
+      topologySpreadConstraints:
+        - maxSkew: 1
+          topologyKey: topology.kubernetes.io/zone
+          whenUnsatisfiable: DoNotSchedule
+          labelSelector:
+            matchLabels:
+              app: ext-authz-adapter
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: ext-authz-adapter
+  namespace: wid-system
+spec:
+  selector:
+    app: ext-authz-adapter
+  ports:
+    - name: grpc
+      port: 9191
+      targetPort: 9191
+      protocol: TCP
+    - name: admin
+      port: 8080
+      targetPort: 8080
+      protocol: TCP
+
+---
+# ══════════════════════════════════════════════════════
+# Control Plane: Policy Engine
+# ══════════════════════════════════════════════════════
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: policy-engine
+  namespace: wid-system
+spec:
+  replicas: 3
+  selector:
+    matchLabels:
+      app: policy-engine
+  template:
+    metadata:
+      labels:
+        app: policy-engine
+    spec:
+      serviceAccountName: wid-control-plane
+      containers:
+        - name: policy-engine
+          image: ACCOUNT_ID.dkr.ecr.REGION.amazonaws.com/wid/policy-engine:latest
+          ports:
+            - containerPort: 3001
+          env:
+            - name: PORT
+              value: "3001"
+            - name: DATABASE_URL
+              valueFrom:
+                secretKeyRef:
+                  name: wid-db-credentials
+                  key: connection-string
+          resources:
+            requests: { cpu: 250m, memory: 256Mi }
+            limits: { cpu: 1000m, memory: 512Mi }
+          livenessProbe:
+            httpGet: { path: /health, port: 3001 }
+            periodSeconds: 10
+          readinessProbe:
+            httpGet: { path: /health, port: 3001 }
+            periodSeconds: 5
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: policy-engine
+  namespace: wid-system
+spec:
+  selector:
+    app: policy-engine
+  ports:
+    - port: 3001
+      targetPort: 3001
+
+---
+# ══════════════════════════════════════════════════════
+# Control Plane: Token Service
+# ══════════════════════════════════════════════════════
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: token-service
+  namespace: wid-system
+spec:
+  replicas: 3
+  selector:
+    matchLabels:
+      app: token-service
+  template:
+    metadata:
+      labels:
+        app: token-service
+    spec:
+      serviceAccountName: wid-control-plane
+      containers:
+        - name: token-service
+          image: ACCOUNT_ID.dkr.ecr.REGION.amazonaws.com/wid/token-service:latest
+          ports:
+            - containerPort: 3000
+          env:
+            - name: PORT
+              value: "3000"
+            - name: DATABASE_URL
+              valueFrom:
+                secretKeyRef:
+                  name: wid-db-credentials
+                  key: connection-string
+          resources:
+            requests: { cpu: 100m, memory: 128Mi }
+            limits: { cpu: 500m, memory: 256Mi }
+          livenessProbe:
+            httpGet: { path: /health, port: 3000 }
+          readinessProbe:
+            httpGet: { path: /health, port: 3000 }
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: token-service
+  namespace: wid-system
+spec:
+  selector:
+    app: token-service
+  ports:
+    - port: 3000
+      targetPort: 3000
+
+---
+# ══════════════════════════════════════════════════════
+# Control Plane: Credential Broker
+# ══════════════════════════════════════════════════════
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: credential-broker
+  namespace: wid-system
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: credential-broker
+  template:
+    metadata:
+      labels:
+        app: credential-broker
+    spec:
+      serviceAccountName: wid-control-plane
+      containers:
+        - name: credential-broker
+          image: ACCOUNT_ID.dkr.ecr.REGION.amazonaws.com/wid/credential-broker:latest
+          ports:
+            - containerPort: 3002
+          env:
+            - name: PORT
+              value: "3002"
+            - name: DATABASE_URL
+              valueFrom:
+                secretKeyRef:
+                  name: wid-db-credentials
+                  key: connection-string
+            # In AWS: use Secrets Manager instead of Vault
+            - name: VAULT_ADDR
+              value: "https://vault.wid-system.svc.cluster.local:8200"
+          resources:
+            requests: { cpu: 100m, memory: 128Mi }
+            limits: { cpu: 500m, memory: 256Mi }
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: credential-broker
+  namespace: wid-system
+spec:
+  selector:
+    app: credential-broker
+  ports:
+    - port: 3002
+      targetPort: 3002
+
+---
+# ══════════════════════════════════════════════════════
+# Istio Mesh Config — Register ext_authz as extension provider
+# ══════════════════════════════════════════════════════
+# Apply this to Istio's mesh config:
+#
+#   kubectl edit configmap istio -n istio-system
+#
+# Add under mesh.extensionProviders:
+#
+#   extensionProviders:
+#     - name: wid-policy-engine
+#       envoyExtAuthzGrpc:
+#         service: ext-authz-adapter.wid-system.svc.cluster.local
+#         port: 9191
+#         timeout: 500ms
+#         failOpen: false
+
+---
+# ══════════════════════════════════════════════════════
+# Authorization Policy — Enable enforcement per namespace
+# ══════════════════════════════════════════════════════
+# Apply this to any namespace you want protected.
+# Remove it = instant rollback (zero traffic impact).
+# =
+# EXAMPLE — protect the "production" namespace:
+apiVersion: security.istio.io/v1
+kind: AuthorizationPolicy
+metadata:
+  name: wid-protect
+  namespace: production           # ← change per namespace
+spec:
+  # To protect specific services, add selector:
+  # selector:
+  #   matchLabels:
+  #     app: payment-service
+  action: CUSTOM
+  provider:
+    name: wid-policy-engine       # ← matches extensionProviders name above
+  rules:
+    - {}                          # All requests in this namespace
+
+---
+# ══════════════════════════════════════════════════════
+# HorizontalPodAutoscaler — scale adapter based on CPU
+# ══════════════════════════════════════════════════════
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: ext-authz-adapter
+  namespace: wid-system
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: ext-authz-adapter
+  minReplicas: 3
+  maxReplicas: 20
+  metrics:
+    - type: Resource
+      resource:
+        name: cpu
+        target:
+          type: Utilization
+          averageUtilization: 70
+    - type: Resource
+      resource:
+        name: memory
+        target:
+          type: Utilization
+          averageUtilization: 80
+
+---
+# ══════════════════════════════════════════════════════
+# PodDisruptionBudget — always keep 2+ adapters running
+# ══════════════════════════════════════════════════════
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: ext-authz-adapter
+  namespace: wid-system
+spec:
+  minAvailable: 2
+  selector:
+    matchLabels:
+      app: ext-authz-adapter
+
+---
+# ══════════════════════════════════════════════════════
+# NetworkPolicy — restrict adapter's egress
+# ══════════════════════════════════════════════════════
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: ext-authz-adapter
+  namespace: wid-system
+spec:
+  podSelector:
+    matchLabels:
+      app: ext-authz-adapter
+  policyTypes:
+    - Ingress
+    - Egress
+  ingress:
+    # Accept gRPC from any namespace (Envoy sidecars call us)
+    - ports:
+        - port: 9191
+          protocol: TCP
+    # Accept admin from monitoring
+    - ports:
+        - port: 8080
+          protocol: TCP
+  egress:
+    # Only talk to control plane services
+    - to:
+        - podSelector:
+            matchLabels:
+              app: policy-engine
+      ports:
+        - port: 3001
+    - to:
+        - podSelector:
+            matchLabels:
+              app: token-service
+      ports:
+        - port: 3000
+    - to:
+        - podSelector:
+            matchLabels:
+              app: credential-broker
+      ports:
+        - port: 3002
+    # DNS
+    - ports:
+        - port: 53
+          protocol: UDP
+        - port: 53
+          protocol: TCP

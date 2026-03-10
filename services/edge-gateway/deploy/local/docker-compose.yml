@@ -1,0 +1,141 @@
+# =============================================================================
+# Edge Gateway — Local Development Stack
+# =============================================================================
+#
+# This docker-compose demonstrates the edge gateway WITHOUT iptables
+# (since Docker Desktop doesn't support NET_ADMIN easily).
+#
+# Instead of transparent interception, the demo apps are configured to
+# use the gateway as an explicit HTTP proxy via environment variables.
+# In production (K8s/VM), iptables handles this transparently.
+#
+# Architecture:
+#   demo-app → edge-gateway:15001 → [policy check] → target-service
+#              (outbound proxy)     (token exchange)
+#
+# =============================================================================
+
+services:
+  # ── Infrastructure ──
+  postgres:
+    image: postgres:15-alpine
+    environment:
+      POSTGRES_USER: wid_user
+      POSTGRES_PASSWORD: wid_password
+      POSTGRES_DB: workload_identity
+    ports:
+      - "5432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U wid_user -d workload_identity"]
+      interval: 2s
+      timeout: 2s
+      retries: 10
+
+  vault:
+    image: hashicorp/vault:1.15
+    environment:
+      VAULT_DEV_ROOT_TOKEN_ID: dev-root-token
+      VAULT_DEV_LISTEN_ADDRESS: "0.0.0.0:8200"
+    ports:
+      - "8200:8200"
+    cap_add:
+      - IPC_LOCK
+
+  # ── Control Plane Services ──
+  policy-engine:
+    build:
+      context: ../../../policy-sync-service
+    environment:
+      PORT: 3001
+      DATABASE_URL: postgresql://wid_user:wid_password@postgres:5432/workload_identity
+      POLICY_COMPILER: rego
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  token-service:
+    build:
+      context: ../../../token-service
+    environment:
+      PORT: 3000
+      DATABASE_URL: postgresql://wid_user:wid_password@postgres:5432/workload_identity
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  credential-broker:
+    build:
+      context: ../../../credential-broker
+    environment:
+      PORT: 3002
+      DATABASE_URL: postgresql://wid_user:wid_password@postgres:5432/workload_identity
+      VAULT_ADDR: http://vault:8200
+      VAULT_TOKEN: dev-root-token
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  # ── Edge Gateway ──
+  edge-gateway:
+    build:
+      context: ../../../..
+      dockerfile: services/edge-gateway/Dockerfile
+    ports:
+      - "15000:15000"
+      - "15001:15001"
+      - "15006:15006"
+    environment:
+      WORKLOAD_NAME: frontend
+      SPIFFE_ID: "spiffe://cluster.local/ns/default/sa/frontend"
+      TRUST_DOMAIN: cluster.local
+      WORKLOAD_NS: default
+      APP_PORT: 8081
+      DEFAULT_MODE: audit
+      FAIL_BEHAVIOR: open
+      POLICY_SERVICE_URL: http://policy-engine:3001
+      TOKEN_SERVICE_URL: http://token-service:3000
+      BROKER_URL: http://credential-broker:3002
+      LOG_LEVEL: info
+      STRUCTURED_LOGS: "false"
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:15000/healthz"]
+      interval: 5s
+      timeout: 2s
+      retries: 10
+    depends_on:
+      policy-engine:
+        condition: service_started
+      token-service:
+        condition: service_started
+      credential-broker:
+        condition: service_started
+
+  # ── Demo App (uses gateway as explicit proxy) ──
+  demo-app:
+    image: node:18-alpine
+    working_dir: /app
+    volumes:
+      - ./demo-app.js:/app/demo-app.js:ro
+    command: ["node", "demo-app.js"]
+    environment:
+      PORT: 8081
+      GATEWAY_HOST: edge-gateway
+      GATEWAY_PORT: 15001
+      TARGET_SERVICE: http://target-service:9090
+    ports:
+      - "8081:8081"
+    depends_on:
+      edge-gateway:
+        condition: service_healthy
+
+  # ── Target Service (receives proxied requests) ──
+  target-service:
+    image: node:18-alpine
+    working_dir: /app
+    volumes:
+      - ./target-service.js:/app/target-service.js:ro
+    command: ["node", "target-service.js"]
+    environment:
+      PORT: 9090
+    ports:
+      - "9090:9090"

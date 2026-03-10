@@ -1,0 +1,234 @@
+version: '3.8'
+
+# =============================================================================
+# LOCAL MODE — Full WID Platform + Envoy + ext_authz Adapter
+# =============================================================================
+#
+# Architecture:
+#   demo-frontend → envoy-frontend (sidecar) → ext_authz → envoy-backend → demo-backend
+#
+# Run from project root:
+#   docker compose -f services/ext-authz-adapter/deploy/local/docker-compose.yml up --build
+#
+# Test:  curl http://localhost:10000/call     (through Envoy → ext_authz → backend)
+# Admin: curl http://localhost:8080/metrics   (adapter metrics)
+# =============================================================================
+
+services:
+  # ════════════════════════════════════════════════════
+  # Infrastructure
+  # ════════════════════════════════════════════════════
+  postgres:
+    image: postgres:15-alpine
+    environment:
+      POSTGRES_DB: workload_identity
+      POSTGRES_USER: wid_user
+      POSTGRES_PASSWORD: wid_password
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+      - ../../../../database/init.sql:/docker-entrypoint-initdb.d/01-init.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U wid_user -d workload_identity"]
+      interval: 3s
+      timeout: 2s
+      retries: 15
+
+  vault:
+    image: hashicorp/vault:1.15
+    cap_add: ["IPC_LOCK"]
+    environment:
+      VAULT_DEV_ROOT_TOKEN_ID: dev-root-token
+      VAULT_DEV_LISTEN_ADDRESS: "0.0.0.0:8200"
+    ports:
+      - "8200:8200"
+
+  # ════════════════════════════════════════════════════
+  # Control Plane (each service builds from its own directory)
+  # ════════════════════════════════════════════════════
+
+  policy-engine:
+    build:
+      context: ../../../policy-sync-service
+    restart: on-failure
+    ports:
+      - "3001:3001"
+    environment:
+      PORT: 3001
+      DATABASE_URL: postgresql://wid_user:wid_password@postgres:5432/workload_identity
+      POLICY_COMPILER: rego
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  token-service:
+    build:
+      context: ../../../token-service
+    restart: on-failure
+    ports:
+      - "3000:3000"
+    environment:
+      PORT: 3000
+      DATABASE_URL: postgresql://wid_user:wid_password@postgres:5432/workload_identity
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  credential-broker:
+    build:
+      context: ../../../credential-broker
+    restart: on-failure
+    ports:
+      - "3002:3002"
+    environment:
+      PORT: 3002
+      DATABASE_URL: postgresql://wid_user:wid_password@postgres:5432/workload_identity
+      VAULT_ADDR: http://vault:8200
+      VAULT_TOKEN: dev-root-token
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  # ════════════════════════════════════════════════════
+  # ext_authz Adapter — builds from PROJECT ROOT so it can access shared/
+  # ════════════════════════════════════════════════════
+  ext-authz-adapter:
+    build:
+      context: ../../../..
+      dockerfile: services/ext-authz-adapter/Dockerfile
+    ports:
+      - "9191:9191"
+      - "8080:8080"
+    environment:
+      DEPLOY_MODE: local
+      GRPC_PORT: 9191
+      ADMIN_PORT: 8080
+      POLICY_SERVICE_URL: http://policy-engine:3001
+      TOKEN_SERVICE_URL: http://token-service:3000
+      BROKER_URL: http://credential-broker:3002
+      DEFAULT_MODE: audit
+      DEFAULT_FAIL_BEHAVIOR: open
+      CACHE_ENABLED: "true"
+      CACHE_TTL_MS: "30000"
+      CRED_BUFFER_ENABLED: "true"
+      CP_TIMEOUT_MS: "2000"
+      LOG_LEVEL: info
+      STRUCTURED_LOGS: "false"
+    depends_on:
+      - policy-engine
+      - token-service
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:8080/healthz"]
+      interval: 5s
+      timeout: 2s
+      retries: 10
+
+  # ════════════════════════════════════════════════════
+  # Discovery Service — NHI auto-discovery + attestation
+  # ════════════════════════════════════════════════════
+  discovery-service:
+    build:
+      context: ../../../discovery-service
+    restart: on-failure
+    ports:
+      - "3004:3003"
+    environment:
+      PORT: 3003
+      DATABASE_URL: postgresql://wid_user:wid_password@postgres:5432/workload_identity
+      SPIRE_TRUST_DOMAIN: company.com
+      VAULT_TOKEN: dev-root-token
+      VAULT_ADDR: http://vault:8200
+      TOKEN_SERVICE_URL: http://token-service:3000
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  # ════════════════════════════════════════════════════
+  # WID Relay — Hub & Spoke Federation
+  # ════════════════════════════════════════════════════
+  relay:
+    build:
+      context: ../../../relay-service
+    restart: on-failure
+    ports:
+      - "3005:3005"
+    environment:
+      PORT: 3005
+      ENVIRONMENT_NAME: local-docker
+      ENVIRONMENT_TYPE: docker
+      REGION: local
+      CLUSTER_ID: docker-compose
+      # In local dev, relay proxies to local policy engine
+      LOCAL_POLICY_ENGINE_URL: http://policy-engine:3001
+      # No central URL = standalone mode (this IS the central)
+      CENTRAL_CONTROL_PLANE_URL: ""
+      POLICY_SYNC_INTERVAL_MS: "30000"
+      AUDIT_FLUSH_INTERVAL_MS: "10000"
+    depends_on:
+      - policy-engine
+
+  # ════════════════════════════════════════════════════
+  # Web UI — Workload Identity Manager dashboard
+  # ════════════════════════════════════════════════════
+  web:
+    build:
+      context: ../../../../web/workload-identity-manager
+    ports:
+      - "3100:3100"
+    depends_on:
+      - policy-engine
+      - discovery-service
+
+  # ════════════════════════════════════════════════════
+  # Envoy Proxies — simulate Istio sidecars
+  # ════════════════════════════════════════════════════
+  envoy-frontend:
+    image: envoyproxy/envoy:v1.28-latest
+    ports:
+      - "10000:10000"
+      - "9901:9901"
+    volumes:
+      - ./envoy-frontend.yaml:/etc/envoy/envoy.yaml:ro
+    depends_on:
+      ext-authz-adapter:
+        condition: service_healthy
+
+  envoy-backend:
+    image: envoyproxy/envoy:v1.28-latest
+    volumes:
+      - ./envoy-backend.yaml:/etc/envoy/envoy.yaml:ro
+    depends_on:
+      ext-authz-adapter:
+        condition: service_healthy
+
+  # ════════════════════════════════════════════════════
+  # Demo Apps (know nothing about WID)
+  # ════════════════════════════════════════════════════
+  demo-frontend:
+    image: node:18-alpine
+    working_dir: /app
+    volumes:
+      - ./demo-app.js:/app/demo-app.js:ro
+    environment:
+      APP_NAME: frontend
+      APP_PORT: 8081
+      CALL_TARGET: "http://envoy-backend:10001/data"
+    command: node demo-app.js
+    depends_on:
+      - envoy-backend
+
+  demo-backend:
+    image: node:18-alpine
+    working_dir: /app
+    volumes:
+      - ./demo-app.js:/app/demo-app.js:ro
+    environment:
+      APP_NAME: backend
+      APP_PORT: 9090
+    command: node demo-app.js
+
+volumes:
+  pgdata:

@@ -1,0 +1,7 @@
+{
+  "name": "wid-scripts",
+  "private": true,
+  "dependencies": {
+    "pg": "^8.18.0"
+  }
+}
