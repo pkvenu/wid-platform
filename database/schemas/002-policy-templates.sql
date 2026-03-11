@@ -180,6 +180,11 @@ ON CONFLICT (id) DO UPDATE SET
     effect = EXCLUDED.effect,
     updated_at = NOW();
 
+-- Add compliance_frameworks column (idempotent)
+ALTER TABLE policy_templates ADD COLUMN IF NOT EXISTS compliance_frameworks JSONB DEFAULT '[]';
+CREATE INDEX IF NOT EXISTS idx_policy_templates_compliance ON policy_templates USING GIN (compliance_frameworks);
+COMMENT ON COLUMN policy_templates.compliance_frameworks IS 'Array of {framework, controls[]} objects mapping this template to compliance standards';
+
 
 -- ═══════════════════════════════════════════════════════════════════════════════
 -- 5. SEED FINDING → REMEDIATION MAP (27 entries, 9 finding types)

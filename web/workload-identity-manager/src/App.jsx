@@ -15,6 +15,7 @@ import Templates from './pages/Templates';
 import Operations from './pages/Operations';
 import DemoFlow from './pages/DemoFlow';
 import Connectors from './pages/Connectors';
+import Compliance from './pages/Compliance';
 
 function App() {
   return (
@@ -46,6 +47,7 @@ function App() {
               <Route path="graph" element={<GraphPage />} />
               {/* Hidden from nav but still routable for direct links */}
               <Route path="dashboard" element={<Dashboard />} />
+              <Route path="compliance" element={<Compliance />} />
               <Route path="templates" element={<Templates />} />
               <Route path="operations" element={<Operations />} />
               <Route path="demo" element={<DemoFlow />} />

@@ -3,7 +3,9 @@ import { useSearchParams, useNavigate } from 'react-router-dom';
 import { RefreshCw, Activity, Shield, ShieldOff, Clock, Zap, ChevronRight, ChevronDown,
          AlertTriangle, CheckCircle2, XCircle, Layers, ArrowRight, GitBranch, Play, Loader,
          Search, TrendingUp, TrendingDown, ExternalLink, Filter, BarChart3,
-         SkipForward, Square, RotateCcw, FastForward, Pause, X, PanelLeftClose } from 'lucide-react';
+         SkipForward, Square, RotateCcw, FastForward, Pause, X, PanelLeftClose,
+         FileText, Download } from 'lucide-react';
+import { jsPDF } from 'jspdf';
 
 const RouteIcon = (p) => <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" {...p}><circle cx="6" cy="19" r="3"/><path d="M9 19h8.5a3.5 3.5 0 0 0 0-7h-11a3.5 3.5 0 0 1 0-7H15"/><circle cx="18" cy="5" r="3"/></svg>;
 const ListIcon = (p) => <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" {...p}><line x1="8" y1="6" x2="21" y2="6"/><line x1="8" y1="12" x2="21" y2="12"/><line x1="8" y1="18" x2="21" y2="18"/><line x1="3" y1="6" x2="3.01" y2="6"/><line x1="3" y1="12" x2="3.01" y2="12"/><line x1="3" y1="18" x2="3.01" y2="18"/></svg>;
@@ -266,6 +268,8 @@ function TraceDetail({ traceHops, selectedDecision, initialHopIndex, onNavigateG
   const [rerunResults, setRerunResults] = useState(null);
   const [rerunning, setRerunning] = useState(false);
   const [rerunProgress, setRerunProgress] = useState({ hop: -1, step: '', total: 0 });
+  const [auditReplay, setAuditReplay] = useState(null);
+  const [auditReplayLoading, setAuditReplayLoading] = useState(false);
   const userPickedHop = useRef(false); // tracks whether user manually clicked a hop
   const prevTraceId = useRef(null);
 
@@ -295,6 +299,8 @@ function TraceDetail({ traceHops, selectedDecision, initialHopIndex, onNavigateG
       setSelectedHop(initialHopIndex || 0);
       userPickedHop.current = false;
       prevTraceId.current = currentTraceId;
+      setAuditReplay(null);
+      setAuditReplayLoading(false);
       // Reset replay state
       setReplayMode(null);
       setCurrentStepIdx(-1);
@@ -311,6 +317,146 @@ function TraceDetail({ traceHops, selectedDecision, initialHopIndex, onNavigateG
   };
 
   const API = ''; // URLs already include /api/v1 prefix; proxy handles routing
+
+  // ── Audit Replay: fetch historical replay data from backend ──
+  const fetchAuditReplay = async () => {
+    if (!traceId) return;
+    if (auditReplay) { setAuditReplay(null); return; } // toggle off
+    setAuditReplayLoading(true);
+    try {
+      const res = await fetch(`${API}/api/v1/access/decisions/replay/${encodeURIComponent(traceId)}`);
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const data = await res.json();
+      // Backend wraps in { replay: {...} } — normalize
+      setAuditReplay(data.replay || data);
+    } catch (e) {
+      console.error('Audit replay fetch failed:', e);
+      setAuditReplay({ error: e.message });
+    } finally {
+      setAuditReplayLoading(false);
+    }
+  };
+
+  // ── PDF Export: generate downloadable compliance report ──
+  const generatePDF = (replayData) => {
+    if (!replayData || replayData.error) return;
+    const doc = new jsPDF({ unit: 'mm', format: 'a4' });
+    const W = doc.internal.pageSize.getWidth();
+    let y = 20;
+    const lineH = 5;
+    const checkPage = (need = 20) => { if (y + need > 275) { doc.addPage(); y = 20; } };
+
+    // Title
+    doc.setFontSize(16);
+    doc.setFont('helvetica', 'bold');
+    doc.text('Authorization Decision Replay Report', W / 2, y, { align: 'center' });
+    y += 10;
+
+    // Meta
+    doc.setFontSize(9);
+    doc.setFont('helvetica', 'normal');
+    const meta = [
+      ['Trace ID', replayData.trace_id || traceId],
+      ['Generated At', replayData.generated_at || new Date().toISOString()],
+      ['Origin', replayData.origin || 'N/A'],
+      ['Final Verdict', (replayData.final_verdict || 'N/A').toUpperCase()],
+      ['Chain Authorized', replayData.chain_authorized ? 'YES' : 'NO'],
+      ['Total Hops', String(replayData.hops?.length || 0)],
+    ];
+    for (const [k, v] of meta) {
+      doc.setFont('helvetica', 'bold');
+      doc.text(`${k}:`, 15, y);
+      doc.setFont('helvetica', 'normal');
+      doc.text(v, 55, y);
+      y += lineH;
+    }
+    y += 5;
+
+    // Hops
+    const hopsData = replayData.hops || [];
+    for (let i = 0; i < hopsData.length; i++) {
+      checkPage(40);
+      const h = hopsData[i];
+      doc.setFontSize(11);
+      doc.setFont('helvetica', 'bold');
+      doc.text(`Hop ${i + 1}: ${h.source || 'unknown'} → ${h.destination || 'unknown'}`, 15, y);
+      y += 6;
+      doc.setFontSize(9);
+      doc.setFont('helvetica', 'normal');
+      const hopFields = [
+        ['Verdict', (h.verdict || 'N/A').toUpperCase()],
+        ['Policy', h.policy_name || h.policy?.name || 'default-deny'],
+        ['Policy Version', h.policy_version_hash || h.policy?.version || 'N/A'],
+        ['Method / Path', `${h.method || 'POST'} ${h.path || '/'}`],
+        ['Enforcement', h.enforcement_action || 'N/A'],
+        ['Latency', `${h.latency_ms || 0}ms`],
+      ];
+      for (const [k, v] of hopFields) {
+        doc.setFont('helvetica', 'bold');
+        doc.text(`  ${k}:`, 15, y);
+        doc.setFont('helvetica', 'normal');
+        doc.text(v, 55, y);
+        y += lineH;
+      }
+
+      // Policy snapshot
+      if (h.policy_snapshot || h.policy?.snapshot) {
+        const ps = h.policy_snapshot || h.policy.snapshot;
+        checkPage(25);
+        y += 2;
+        doc.setFont('helvetica', 'bold');
+        doc.text('  Policy Snapshot:', 15, y);
+        y += lineH;
+        doc.setFont('helvetica', 'normal');
+        const psFields = [
+          ['Effect', ps.effect || 'deny'],
+          ['Enforcement Mode', ps.enforcement_mode || 'enforce'],
+          ['Severity', ps.severity || 'N/A'],
+        ];
+        for (const [k, v] of psFields) {
+          doc.text(`    ${k}: ${v}`, 15, y);
+          y += lineH;
+        }
+        if (ps.conditions?.length) {
+          doc.text(`    Conditions: ${ps.conditions.map(c => `${c.field} ${c.operator} ${c.value || ''}`).join('; ')}`, 15, y);
+          y += lineH;
+        }
+        if (ps.actions?.length) {
+          doc.text(`    Actions: ${ps.actions.map(a => a.type || a).join(', ')}`, 15, y);
+          y += lineH;
+        }
+      }
+
+      // Token context
+      if (h.token_context) {
+        checkPage(15);
+        const tc = typeof h.token_context === 'string' ? JSON.parse(h.token_context) : h.token_context;
+        doc.text(`  Trust Level: ${tc.trust_level || 'N/A'}`, 15, y);
+        y += lineH;
+        doc.text(`  Attestation: ${tc.attestation_method || 'N/A'}`, 15, y);
+        y += lineH;
+      }
+      y += 5;
+    }
+
+    // Chain integrity
+    checkPage(15);
+    doc.setFontSize(10);
+    doc.setFont('helvetica', 'bold');
+    const chainOk = replayData.chain_authorized !== false;
+    doc.text(`Chain Integrity: ${chainOk ? 'ALL HOPS AUTHORIZED' : 'CHAIN VIOLATION DETECTED'}`, 15, y);
+    y += 10;
+
+    // Footer
+    doc.setFontSize(8);
+    doc.setFont('helvetica', 'normal');
+    doc.setTextColor(128);
+    doc.text('Generated by WID Platform — Deterministic Decision Replay', W / 2, 287, { align: 'center' });
+    doc.setTextColor(0);
+
+    const dateStr = new Date().toISOString().split('T')[0];
+    doc.save(`replay-${(traceId || 'unknown').replace(/[^a-zA-Z0-9-]/g, '_')}-${dateStr}.pdf`);
+  };
 
   // ── Build the full list of steps for replay ──
   const buildStepList = () => {
@@ -625,6 +771,19 @@ function TraceDetail({ traceHops, selectedDecision, initialHopIndex, onNavigateG
             <button onClick={stopReplay}
               className="text-[8px] font-bold px-2 py-1 rounded-md border text-red-400 bg-red-400/10 border-red-400/30 hover:bg-red-400/20 flex items-center gap-1 ml-1">
               <Square className="w-2.5 h-2.5" /> Stop
+            </button>
+          )}
+          {traceId && !replayMode && (
+            <button onClick={fetchAuditReplay} disabled={auditReplayLoading}
+              className={`text-[8px] font-bold px-2 py-1 rounded-md border flex items-center gap-1 ml-1 ${auditReplay && !auditReplay.error ? 'text-amber-400 bg-amber-400/15 border-amber-400/30' : 'text-slate-400 bg-slate-400/10 border-slate-400/20 hover:bg-slate-400/20'}`}>
+              {auditReplayLoading ? <Loader className="w-2.5 h-2.5 animate-spin" /> : <FileText className="w-2.5 h-2.5" />}
+              {auditReplay && !auditReplay.error ? 'Close Replay' : 'Audit Replay'}
+            </button>
+          )}
+          {auditReplay && !auditReplay.error && (
+            <button onClick={() => generatePDF(auditReplay)}
+              className="text-[8px] font-bold px-2 py-1 rounded-md border text-emerald-400 bg-emerald-400/10 border-emerald-400/30 hover:bg-emerald-400/20 flex items-center gap-1">
+              <Download className="w-2.5 h-2.5" /> Export PDF
             </button>
           )}
     </div>
@@ -1293,6 +1452,117 @@ function TraceDetail({ traceHops, selectedDecision, initialHopIndex, onNavigateG
         </div>
         )}
       </div>
+
+      {/* Audit Replay Panel */}
+      {auditReplay && !auditReplay.error && (
+        <div className="flex-shrink-0 border-b overflow-auto" style={{ borderColor: 'rgba(245,158,11,0.2)', background: 'rgba(245,158,11,0.03)', maxHeight: '50%' }}>
+          <div className="px-4 py-3">
+            <div className="flex items-center gap-2 mb-3">
+              <FileText className="w-4 h-4 text-amber-400" />
+              <span className="text-[11px] font-bold text-amber-400">AUDIT REPLAY — DETERMINISTIC DECISION RECORD</span>
+              <span className="text-[8px] font-mono text-nhi-faint ml-auto">{auditReplay.generated_at || new Date().toISOString()}</span>
+            </div>
+            {/* Replay metadata */}
+            <div className="grid grid-cols-4 gap-2 mb-3">
+              {[
+                ['Trace ID', auditReplay.trace_id || traceId],
+                ['Origin', auditReplay.origin || 'N/A'],
+                ['Final Verdict', (auditReplay.final_verdict || 'N/A').toUpperCase()],
+                ['Chain Authorized', auditReplay.chain_authorized ? 'YES' : 'NO'],
+              ].map(([label, value], idx) => (
+                <div key={idx} className="rounded-lg px-2.5 py-1.5" style={{ background: 'var(--surface-2)', border: '1px solid var(--border)' }}>
+                  <div className="text-[7px] font-bold uppercase text-nhi-faint">{label}</div>
+                  <div className={`text-[10px] font-bold font-mono truncate ${
+                    label === 'Final Verdict' ? (value === 'ALLOW' || value === 'GRANTED' ? 'text-emerald-400' : 'text-red-400') :
+                    label === 'Chain Authorized' ? (value === 'YES' ? 'text-emerald-400' : 'text-red-400') :
+                    'text-nhi-text'
+                  }`}>{value}</div>
+                </div>
+              ))}
+            </div>
+            {/* Hops */}
+            {(auditReplay.hops || []).map((rh, ri) => (
+              <div key={ri} className="rounded-lg border mb-2 overflow-hidden" style={{ borderColor: 'var(--border)' }}>
+                <div className="px-3 py-2 flex items-center gap-2" style={{ background: 'var(--surface-2)' }}>
+                  <span className="text-[8px] font-bold px-1.5 py-0.5 rounded bg-amber-400/15 text-amber-400">HOP {ri + 1}</span>
+                  <TypeBadge name={rh.source || ''} size="sm" />
+                  <span className="text-[9px] font-bold text-nhi-text font-mono">{(rh.source || '').replace(/^wid-dev-/, '').substring(0, 20)}</span>
+                  <ArrowRight className="w-3 h-3 text-nhi-faint" />
+                  <TypeBadge name={rh.destination || ''} size="sm" />
+                  <span className="text-[9px] font-bold text-nhi-text font-mono">{(rh.destination || '').replace(/^wid-dev-/, '').substring(0, 20)}</span>
+                  <div className="flex-1" />
+                  <span className={`text-[7px] font-bold px-1.5 py-0.5 rounded ${
+                    rh.verdict === 'allow' || rh.verdict === 'granted' ? 'bg-emerald-400/15 text-emerald-400' : 'bg-red-400/15 text-red-400'
+                  }`}>{(rh.verdict || 'N/A').toUpperCase()}</span>
+                  <span className="text-[8px] font-mono text-nhi-faint">{rh.policy_name || rh.policy?.name || 'default-deny'}</span>
+                  <span className="text-[8px] text-nhi-faint">{rh.latency_ms || 0}ms</span>
+                </div>
+                {(rh.policy_snapshot || rh.policy?.snapshot) && (() => {
+                  const snap = rh.policy_snapshot || rh.policy?.snapshot;
+                  const vHash = rh.policy_version_hash || rh.policy?.version;
+                  return (
+                  <div className="px-3 py-2" style={{ background: 'var(--surface-1)', borderTop: '1px solid var(--border)' }}>
+                    <div className="text-[7px] font-bold uppercase text-nhi-faint mb-1">Policy Snapshot</div>
+                    <div className="grid grid-cols-3 gap-2 text-[8px]">
+                      <div><span className="text-nhi-faint">Version: </span><span className="text-nhi-text font-mono">{vHash || 'N/A'}</span></div>
+                      <div><span className="text-nhi-faint">Effect: </span><span className="text-nhi-text">{snap.effect || 'deny'}</span></div>
+                      <div><span className="text-nhi-faint">Mode: </span><span className="text-nhi-text">{snap.enforcement_mode || 'enforce'}</span></div>
+                    </div>
+                    {snap.conditions?.length > 0 && (
+                      <div className="mt-1">
+                        <span className="text-[7px] font-bold text-nhi-faint">Conditions: </span>
+                        {snap.conditions.map((c, ci) => (
+                          <span key={ci} className="text-[8px] font-mono text-cyan-400 mr-2">{c.field} {c.operator} {c.value || ''}</span>
+                        ))}
+                      </div>
+                    )}
+                    {snap.actions?.length > 0 && (
+                      <div className="mt-0.5">
+                        <span className="text-[7px] font-bold text-nhi-faint">Actions: </span>
+                        {snap.actions.map((a, ai) => (
+                          <span key={ai} className="text-[8px] font-mono text-amber-300 mr-2">{a.type || a}</span>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                  );
+                })()}
+                {rh.token_context && (
+                  <div className="px-3 py-1.5 flex items-center gap-3 text-[8px]" style={{ background: 'var(--surface-1)', borderTop: '1px solid var(--border)' }}>
+                    <span className="text-nhi-faint">Trust:</span>
+                    <span className="text-amber-400 font-bold">{(typeof rh.token_context === 'string' ? JSON.parse(rh.token_context) : rh.token_context)?.trust_level || 'N/A'}</span>
+                    <span className="text-nhi-faint">Attestation:</span>
+                    <span className="text-nhi-text">{(typeof rh.token_context === 'string' ? JSON.parse(rh.token_context) : rh.token_context)?.attestation_method || 'N/A'}</span>
+                  </div>
+                )}
+              </div>
+            ))}
+            {/* Chain integrity assessment */}
+            <div className="rounded-lg px-3 py-2 mt-2" style={{
+              background: auditReplay.chain_authorized !== false ? 'rgba(16,185,129,0.06)' : 'rgba(239,68,68,0.06)',
+              border: `1px solid ${auditReplay.chain_authorized !== false ? 'rgba(16,185,129,0.2)' : 'rgba(239,68,68,0.2)'}`,
+            }}>
+              <div className="flex items-center gap-2">
+                {auditReplay.chain_authorized !== false
+                  ? <CheckCircle2 className="w-3.5 h-3.5 text-emerald-400" />
+                  : <XCircle className="w-3.5 h-3.5 text-red-400" />}
+                <span className={`text-[9px] font-bold ${auditReplay.chain_authorized !== false ? 'text-emerald-400' : 'text-red-400'}`}>
+                  {auditReplay.chain_authorized !== false ? 'ALL HOPS AUTHORIZED — Chain integrity verified' : 'CHAIN VIOLATION — One or more hops unauthorized'}
+                </span>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+      {auditReplay?.error && (
+        <div className="flex-shrink-0 px-4 py-2 border-b" style={{ borderColor: 'rgba(239,68,68,0.2)', background: 'rgba(239,68,68,0.05)' }}>
+          <div className="flex items-center gap-2 text-[9px] text-red-400">
+            <AlertTriangle className="w-3.5 h-3.5" />
+            <span className="font-bold">Audit Replay Error:</span>
+            <span>{auditReplay.error}</span>
+          </div>
+        </div>
+      )}
 
       {/* Bottom: selected hop detail */}
       {hop && (

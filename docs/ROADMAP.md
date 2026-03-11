@@ -90,8 +90,8 @@
 - [x] Snapshots written on first evaluation with a new policy version (deduplicated by policy_id + version_hash)
 - [x] `GET /api/v1/access/decisions/replay/:traceId` returns full replay package (all hops, policy version per hop, request context, verdict, policy snapshots)
 - [x] `GET /api/v1/access/decisions/chain/:traceId` returns chain analysis (origin, authorization status, all hops)
-- [ ] Frontend: "Replay" button on trace detail view (future)
-- [ ] PDF export for auditors (future)
+- [x] Frontend: "Audit Replay" button on trace detail view with full replay panel (metadata, per-hop policy snapshots, conditions, actions, token context, chain integrity)
+- [x] PDF export for auditors (jsPDF) — downloadable replay report with trace details, hop chain, policy snapshots, chain integrity assessment
 **Why it matters**: EU AI Act Article 12 mandatory August 2, 2026. California ADMT requires 5-year retention. No current product provides deterministic replay of authorization decisions across agent chains.
 
 ### 1.3 MCP Server Integrity Scanning
@@ -149,12 +149,18 @@
 - [ ] Event schema documented
 
 ### 2.5 Compliance Policy Packs
-**Status**: Not started
-**Description**: Pre-built policy sets mapped to SOC 2, PCI-DSS, NIST 800-53, ISO 27001, EU AI Act.
-**Acceptance Criteria**:
-- [ ] Policy templates tagged with compliance framework
-- [ ] One-click deploy all policies for a framework
-- [ ] Compliance dashboard showing coverage %
+**Status**: DONE (deployed March 11, 2026)
+**Files**: `compliance-frameworks.js`, `templates.js`, `routes.js`, `002-policy-templates.sql`, `Compliance.jsx`
+**Description**: Pre-built policy sets mapped to SOC 2, PCI-DSS, NIST 800-53, ISO 27001, EU AI Act. See `docs/COMPLIANCE.md` for full documentation.
+**What was built**:
+- [x] 5 frameworks defined with 68 controls (SOC 2: 10, PCI DSS: 13, NIST: 19, ISO: 17, EU AI Act: 9)
+- [x] 125 of 133 templates mapped to compliance frameworks with per-control granularity
+- [x] `compliance_frameworks` JSONB column on `policy_templates` with GIN index
+- [x] 4 compliance API endpoints (list, detail, deploy, coverage)
+- [x] One-click deploy deploys all framework templates in audit mode
+- [x] Compliance dashboard page with framework cards, coverage bars, detail view, deploy workflow
+- [x] Coverage tracking: real-time % per framework and per control
+- [x] URL map updated for GCP load balancer routing
 
 ### 2.6 Production Hardening
 **Status**: Not started
@@ -226,3 +232,5 @@
 | Chain-Aware Enforcement | 2026-03-09 | 9 chain condition fields, 3 templates, chain trace endpoint, anti-confused-deputy |
 | Deterministic Decision Replay | 2026-03-09 | Policy version hashing, snapshots table, replay endpoint, EU AI Act readiness |
 | MCP Server Integrity Scanning | 2026-03-09 | 23 poisoning patterns, integrity verification, 3 new finding types, 6 controls |
+| P1.2 Replay UI + PDF Export | 2026-03-11 | Audit Replay button, replay panel with policy snapshots, jsPDF export |
+| P2.5 Compliance Policy Packs | 2026-03-11 | 5 frameworks, 68 controls, 125 templates mapped, one-click deploy, coverage dashboard |

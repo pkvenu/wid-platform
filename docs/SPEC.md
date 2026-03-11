@@ -68,6 +68,11 @@ Both modes use shared `@wid/core` (CircuitBreaker, PolicyCache, CredBuffer, Audi
 | GET/POST/PUT/DELETE | `/api/v1/policies[/:id]` | Policy CRUD |
 | GET | `/api/v1/policies/templates` | Template listing |
 | POST | `/api/v1/governance/seed-agent-policies` | Seed demo enforcement policies |
+| GET | `/api/v1/access/decisions/replay/:traceId` | Deterministic decision replay with policy snapshots |
+| GET | `/api/v1/compliance/frameworks` | List compliance frameworks with coverage stats |
+| GET | `/api/v1/compliance/frameworks/:id` | Framework detail with mapped templates |
+| POST | `/api/v1/compliance/frameworks/:id/deploy` | One-click deploy all framework templates (audit mode) |
+| GET | `/api/v1/compliance/frameworks/:id/coverage` | Per-control coverage breakdown |
 
 ### 2.2 Discovery Service (`services/discovery-service/`)
 
@@ -130,7 +135,8 @@ Transparent proxy sidecar pattern. One gateway per workload. Evaluates policy lo
 **Pages:**
 - **GraphPage** (`src/pages/GraphPage.jsx`): D3 force-directed identity graph. Inspector panel with: Threat Brief, Remediation (Playbook), AI Agent details, Credentials, Resource Details, Identity & Evidence (Connections). Simulate/Audit/Enforce workflow buttons.
 - **Policies** (`src/pages/Policies.jsx`): Policy CRUD, template deployment, policy editor
-- **AccessEvents** (`src/pages/AccessEvents.jsx`): Live authorization decision stream, trace viewer, agent chain visualization
+- **AccessEvents** (`src/pages/AccessEvents.jsx`): Live authorization decision stream, trace viewer, agent chain visualization, audit replay with PDF export
+- **Compliance** (`src/pages/Compliance.jsx`): Compliance policy packs dashboard — 5 frameworks (SOC 2, PCI DSS, NIST 800-53, ISO 27001, EU AI Act), one-click deploy, coverage tracking. See `docs/COMPLIANCE.md`
 - **Dashboard** (`src/pages/Dashboard.jsx`): Overview KPIs, risk distribution, recent activity
 - **Connectors** (`src/pages/Connectors.jsx`): Cloud account onboarding wizard
 

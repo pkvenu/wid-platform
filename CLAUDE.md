@@ -92,6 +92,7 @@ When asked for design or implementation, respond with:
 | **Testing** | `docs/TESTING.md` | TDD approach, current coverage, test plans |
 | **Architecture** | `shared/ARCHITECTURE.md` | Dual-mode data plane design (edge-gateway vs ext-authz) |
 | **Deep Dive** | `docs/ARCHITECTURE-DEEP-DIVE.md` | Scoring, enforcement, relationship generation |
+| **Compliance** | `docs/COMPLIANCE.md` | 5 compliance frameworks, 68 controls, template mappings |
 
 **When starting a new session**: Read `docs/ROADMAP.md` first to understand current priorities.
 

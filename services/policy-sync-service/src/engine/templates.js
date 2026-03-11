@@ -24,6 +24,12 @@ const POLICY_TEMPLATES = {
       { type: 'block_deploy', message: 'Deployment blocked — attestation required' },
     ],
     scope_environment: 'production',
+    compliance_frameworks: [
+      { framework: 'SOC2', controls: ['CC6.1', 'CC6.3'] },
+      { framework: 'NIST_800_53', controls: ['AC-2', 'AC-3', 'IA-2'] },
+      { framework: 'ISO_27001', controls: ['A.5.15', 'A.8.5', 'A.9.2.1'] },
+      { framework: 'PCI_DSS', controls: ['7.1', '7.2'] },
+    ],
   },
 
   'no-owner-violation': {
@@ -36,6 +42,12 @@ const POLICY_TEMPLATES = {
       { type: 'flag', message: 'Identity has no assigned owner' },
       { type: 'notify', message: 'Unowned identity detected — assign an owner' },
     ],
+    compliance_frameworks: [
+      { framework: 'SOC2', controls: ['CC6.1', 'CC6.2'] },
+      { framework: 'NIST_800_53', controls: ['AC-2', 'IA-4'] },
+      { framework: 'ISO_27001', controls: ['A.5.16', 'A.9.2.1'] },
+      { framework: 'PCI_DSS', controls: ['8.1'] },
+    ],
   },
 
   'shadow-identity-detection': {
@@ -47,6 +59,12 @@ const POLICY_TEMPLATES = {
     actions: [
       { type: 'flag', message: 'Shadow identity detected' },
       { type: 'require_attest', message: 'Attestation required to clear shadow status' },
+    ],
+    compliance_frameworks: [
+      { framework: 'SOC2', controls: ['CC6.1', 'CC7.1'] },
+      { framework: 'NIST_800_53', controls: ['AC-2', 'SI-4'] },
+      { framework: 'ISO_27001', controls: ['A.5.16', 'A.8.16'] },
+      { framework: 'PCI_DSS', controls: ['10.2'] },
     ],
   },
 
@@ -63,6 +81,11 @@ const POLICY_TEMPLATES = {
       { type: 'flag', message: 'Production workload has no SPIFFE identity' },
       { type: 'notify', message: 'Deploy SPIRE agent to provision SPIFFE ID' },
     ],
+    compliance_frameworks: [
+      { framework: 'SOC2', controls: ['CC6.1'] },
+      { framework: 'NIST_800_53', controls: ['IA-2', 'IA-4'] },
+      { framework: 'ISO_27001', controls: ['A.5.16', 'A.8.5'] },
+    ],
   },
 
   'naming-convention': {
@@ -78,6 +101,11 @@ const POLICY_TEMPLATES = {
       { type: 'flag', message: 'Identity name does not follow naming convention (svc-{env}-{purpose})' },
       { type: 'notify', message: 'Rename identity to match organizational naming standard' },
     ],
+    compliance_frameworks: [
+      { framework: 'SOC2', controls: ['CC6.2'] },
+      { framework: 'NIST_800_53', controls: ['IA-4'] },
+      { framework: 'ISO_27001', controls: ['A.5.16'] },
+    ],
   },
 
   'secret-engine-audit': {
@@ -92,6 +120,12 @@ const POLICY_TEMPLATES = {
     actions: [
       { type: 'flag', message: 'Unattested secret engine/credential store' },
       { type: 'require_attest', message: 'Secret engines must be attested for compliance' },
+    ],
+    compliance_frameworks: [
+      { framework: 'SOC2', controls: ['CC6.1', 'CC7.2'] },
+      { framework: 'NIST_800_53', controls: ['SC-12', 'AU-2'] },
+      { framework: 'ISO_27001', controls: ['A.8.24', 'A.8.15'] },
+      { framework: 'PCI_DSS', controls: ['3.5', '10.1'] },
     ],
   },
 
@@ -109,6 +143,12 @@ const POLICY_TEMPLATES = {
       { type: 'flag', message: 'Identity is stale (>90 days inactive)' },
       { type: 'quarantine', message: 'Quarantine stale identity pending review' },
     ],
+    compliance_frameworks: [
+      { framework: 'SOC2', controls: ['CC6.1'] },
+      { framework: 'NIST_800_53', controls: ['IA-5'] },
+      { framework: 'ISO_27001', controls: ['A.9.2.6'] },
+      { framework: 'PCI_DSS', controls: ['8.1'] },
+    ],
   },
 
   'credential-rotation-overdue': {
@@ -121,6 +161,12 @@ const POLICY_TEMPLATES = {
       { type: 'flag', message: 'Credential rotation overdue (>90 days)' },
       { type: 'force_rotation', message: 'Triggering automatic credential rotation' },
       { type: 'notify', message: 'Credential rotation required within 7 days' },
+    ],
+    compliance_frameworks: [
+      { framework: 'SOC2', controls: ['CC6.1'] },
+      { framework: 'NIST_800_53', controls: ['IA-5'] },
+      { framework: 'ISO_27001', controls: ['A.9.4.3'] },
+      { framework: 'PCI_DSS', controls: ['8.2.4'] },
     ],
   },
 
@@ -135,6 +181,12 @@ const POLICY_TEMPLATES = {
       { type: 'disable_identity', message: 'Identity disabled — credential age limit exceeded' },
       { type: 'schedule_decommission', message: 'Scheduled for decommission in 30 days' },
     ],
+    compliance_frameworks: [
+      { framework: 'SOC2', controls: ['CC6.1'] },
+      { framework: 'NIST_800_53', controls: ['IA-5'] },
+      { framework: 'ISO_27001', controls: ['A.9.2.6'] },
+      { framework: 'PCI_DSS', controls: ['8.2'] },
+    ],
   },
 
   'inactivity-timeout-30': {
@@ -146,6 +198,12 @@ const POLICY_TEMPLATES = {
     actions: [
       { type: 'flag', message: 'Identity inactive for 30+ days' },
       { type: 'notify', message: 'Review inactive identity — disable if no longer needed' },
+    ],
+    compliance_frameworks: [
+      { framework: 'SOC2', controls: ['CC6.1'] },
+      { framework: 'NIST_800_53', controls: ['AC-2'] },
+      { framework: 'ISO_27001', controls: ['A.9.2.6'] },
+      { framework: 'PCI_DSS', controls: ['8.1'] },
     ],
   },
 
@@ -159,6 +217,12 @@ const POLICY_TEMPLATES = {
       { type: 'flag', message: 'Credential expiring within 14 days' },
       { type: 'notify', message: 'Credential renewal required before expiry' },
       { type: 'force_rotation', message: 'Auto-rotate credential before expiry' },
+    ],
+    compliance_frameworks: [
+      { framework: 'SOC2', controls: ['CC6.1'] },
+      { framework: 'NIST_800_53', controls: ['IA-5'] },
+      { framework: 'ISO_27001', controls: ['A.5.17'] },
+      { framework: 'PCI_DSS', controls: ['8.2.4'] },
     ],
   },
 
@@ -179,6 +243,12 @@ const POLICY_TEMPLATES = {
       { type: 'deny', message: 'Cross-environment access denied (prod → non-prod)' },
       { type: 'flag', message: 'Cross-environment access attempt detected' },
     ],
+    compliance_frameworks: [
+      { framework: 'SOC2', controls: ['CC6.3', 'CC6.6'] },
+      { framework: 'NIST_800_53', controls: ['AC-3', 'AC-4'] },
+      { framework: 'ISO_27001', controls: ['A.5.15', 'A.8.3'] },
+      { framework: 'PCI_DSS', controls: ['7.1'] },
+    ],
   },
 
   'prod-requires-attestation': {
@@ -193,6 +263,12 @@ const POLICY_TEMPLATES = {
     actions: [
       { type: 'deny', message: 'Unattested client cannot access production resource' },
       { type: 'require_attest', message: 'Client must be attested before accessing production' },
+    ],
+    compliance_frameworks: [
+      { framework: 'SOC2', controls: ['CC6.1', 'CC6.3'] },
+      { framework: 'NIST_800_53', controls: ['AC-3', 'IA-2'] },
+      { framework: 'ISO_27001', controls: ['A.5.15', 'A.8.5'] },
+      { framework: 'PCI_DSS', controls: ['7.1'] },
     ],
   },
 
@@ -209,6 +285,12 @@ const POLICY_TEMPLATES = {
       { type: 'deny', message: 'Insufficient trust level for production access' },
       { type: 'flag', message: 'Low-trust client attempted production access' },
     ],
+    compliance_frameworks: [
+      { framework: 'SOC2', controls: ['CC6.3'] },
+      { framework: 'NIST_800_53', controls: ['AC-3'] },
+      { framework: 'ISO_27001', controls: ['A.5.15'] },
+      { framework: 'PCI_DSS', controls: ['7.1'] },
+    ],
   },
 
   'pii-data-access': {
@@ -224,6 +306,12 @@ const POLICY_TEMPLATES = {
       { type: 'deny', message: 'PII access requires cryptographic attestation' },
       { type: 'flag', message: 'Unauthorized PII access attempt' },
       { type: 'notify', message: 'Security alert: PII access attempt by non-crypto-attested client' },
+    ],
+    compliance_frameworks: [
+      { framework: 'SOC2', controls: ['CC6.3', 'CC6.7'] },
+      { framework: 'NIST_800_53', controls: ['AC-3', 'AC-4'] },
+      { framework: 'ISO_27001', controls: ['A.8.3'] },
+      { framework: 'PCI_DSS', controls: ['7.1', '3.5'] },
     ],
   },
 
@@ -369,6 +457,12 @@ const POLICY_TEMPLATES = {
       { type: 'remove_wildcard', message: 'Replace wildcard with explicit resource list' },
       { type: 'notify', message: 'Wildcard permissions must be remediated within 7 days' },
     ],
+    compliance_frameworks: [
+      { framework: 'SOC2', controls: ['CC6.3'] },
+      { framework: 'NIST_800_53', controls: ['AC-6'] },
+      { framework: 'ISO_27001', controls: ['A.8.2'] },
+      { framework: 'PCI_DSS', controls: ['7.2'] },
+    ],
   },
 
   'privilege-escalation-detection': {
@@ -382,6 +476,12 @@ const POLICY_TEMPLATES = {
       { type: 'notify', message: 'Review privilege escalation path — apply least privilege' },
       { type: 'downgrade_permissions', message: 'Remove escalation capability' },
     ],
+    compliance_frameworks: [
+      { framework: 'SOC2', controls: ['CC6.3', 'CC7.1'] },
+      { framework: 'NIST_800_53', controls: ['AC-6', 'SI-4'] },
+      { framework: 'ISO_27001', controls: ['A.8.2', 'A.8.16'] },
+      { framework: 'PCI_DSS', controls: ['10.2'] },
+    ],
   },
 
   'excessive-resource-access': {
@@ -393,6 +493,11 @@ const POLICY_TEMPLATES = {
     actions: [
       { type: 'flag', message: 'Identity has access to too many resources (>25)' },
       { type: 'notify', message: 'Review and reduce resource access scope' },
+    ],
+    compliance_frameworks: [
+      { framework: 'SOC2', controls: ['CC6.3'] },
+      { framework: 'NIST_800_53', controls: ['AC-6'] },
+      { framework: 'ISO_27001', controls: ['A.8.2'] },
     ],
   },
 
@@ -409,6 +514,12 @@ const POLICY_TEMPLATES = {
       { type: 'flag', message: 'Cross-account access without cryptographic attestation' },
       { type: 'require_attest', message: 'Cryptographic attestation required for cross-account access' },
     ],
+    compliance_frameworks: [
+      { framework: 'SOC2', controls: ['CC6.3'] },
+      { framework: 'NIST_800_53', controls: ['AC-3', 'AC-4'] },
+      { framework: 'ISO_27001', controls: ['A.5.23'] },
+      { framework: 'PCI_DSS', controls: ['7.1'] },
+    ],
   },
 
   'admin-requires-crypto': {
@@ -423,6 +534,12 @@ const POLICY_TEMPLATES = {
     actions: [
       { type: 'flag', message: 'Admin role lacks cryptographic attestation' },
       { type: 'block_deploy', message: 'Admin deployment blocked — deploy SPIRE for Tier 1' },
+    ],
+    compliance_frameworks: [
+      { framework: 'SOC2', controls: ['CC6.1', 'CC6.3'] },
+      { framework: 'NIST_800_53', controls: ['AC-6', 'IA-2'] },
+      { framework: 'ISO_27001', controls: ['A.8.2', 'A.8.5'] },
+      { framework: 'PCI_DSS', controls: ['8.3'] },
     ],
   },
 
@@ -444,6 +561,11 @@ const POLICY_TEMPLATES = {
       { type: 'flag', message: 'Out-of-hours access attempt to production' },
       { type: 'notify', message: 'After-hours production access attempted' },
     ],
+    compliance_frameworks: [
+      { framework: 'SOC2', controls: ['CC6.3'] },
+      { framework: 'NIST_800_53', controls: ['AC-3'] },
+      { framework: 'ISO_27001', controls: ['A.5.15'] },
+    ],
   },
 
   'weekday-only-deploys': {
@@ -457,6 +579,11 @@ const POLICY_TEMPLATES = {
     actions: [
       { type: 'deny', message: 'Deployments restricted to weekdays' },
       { type: 'flag', message: 'Weekend deployment attempt detected' },
+    ],
+    compliance_frameworks: [
+      { framework: 'SOC2', controls: ['CC8.1'] },
+      { framework: 'NIST_800_53', controls: ['CM-3'] },
+      { framework: 'ISO_27001', controls: ['A.8.9'] },
     ],
   },
 
@@ -474,6 +601,12 @@ const POLICY_TEMPLATES = {
       { type: 'flag', message: 'Geo-restricted access violation' },
       { type: 'notify', message: 'Access attempt from unapproved region' },
     ],
+    compliance_frameworks: [
+      { framework: 'SOC2', controls: ['CC6.3', 'CC6.6'] },
+      { framework: 'NIST_800_53', controls: ['AC-3'] },
+      { framework: 'ISO_27001', controls: ['A.5.15'] },
+      { framework: 'PCI_DSS', controls: ['7.1'] },
+    ],
   },
 
   'posture-check-required': {
@@ -490,6 +623,11 @@ const POLICY_TEMPLATES = {
       { type: 'flag', message: 'Low posture score access attempt' },
       { type: 'require_attest', message: 'Re-attest to improve posture score' },
     ],
+    compliance_frameworks: [
+      { framework: 'SOC2', controls: ['CC6.1', 'CC6.3'] },
+      { framework: 'NIST_800_53', controls: ['AC-3', 'CA-7'] },
+      { framework: 'ISO_27001', controls: ['A.5.15', 'A.8.16'] },
+    ],
   },
 
   'rate-limit-enforcement': {
@@ -503,6 +641,11 @@ const POLICY_TEMPLATES = {
     actions: [
       { type: 'rate_limit', message: 'Rate limit exceeded (>5000 req/hr)' },
       { type: 'flag', message: 'Rate limit violation detected' },
+    ],
+    compliance_frameworks: [
+      { framework: 'SOC2', controls: ['CC6.6'] },
+      { framework: 'NIST_800_53', controls: ['SC-7'] },
+      { framework: 'ISO_27001', controls: ['A.5.15'] },
     ],
   },
 
@@ -518,6 +661,12 @@ const POLICY_TEMPLATES = {
     actions: [
       { type: 'require_approval', message: 'Human approval required for restricted data access' },
       { type: 'flag', message: 'Unapproved access attempt to restricted resource' },
+    ],
+    compliance_frameworks: [
+      { framework: 'SOC2', controls: ['CC6.3'] },
+      { framework: 'NIST_800_53', controls: ['AC-3'] },
+      { framework: 'ISO_27001', controls: ['A.8.3'] },
+      { framework: 'PCI_DSS', controls: ['7.1'] },
     ],
   },
 
@@ -539,6 +688,11 @@ const POLICY_TEMPLATES = {
       { type: 'kill_agent', message: 'Agent session terminated — no delegator assigned' },
       { type: 'bind_delegator', message: 'Assign human delegator before agent can operate' },
     ],
+    compliance_frameworks: [
+      { framework: 'EU_AI_ACT', controls: ['Art.14', 'Art.26'] },
+      { framework: 'SOC2', controls: ['CC6.1'] },
+      { framework: 'NIST_800_53', controls: ['AC-2'] },
+    ],
   },
 
   'agent-scope-ceiling': {
@@ -556,6 +710,11 @@ const POLICY_TEMPLATES = {
       { type: 'restrict_tools', message: 'Restricting agent to minimum tool set' },
       { type: 'require_human_loop', message: 'Forcing human-in-loop until scope ceiling set' },
     ],
+    compliance_frameworks: [
+      { framework: 'EU_AI_ACT', controls: ['Art.9', 'Art.14'] },
+      { framework: 'SOC2', controls: ['CC6.3'] },
+      { framework: 'NIST_800_53', controls: ['AC-6'] },
+    ],
   },
 
   'agent-kill-switch-required': {
@@ -570,6 +729,11 @@ const POLICY_TEMPLATES = {
     actions: [
       { type: 'flag', message: 'AI agent has no kill switch' },
       { type: 'notify', message: 'Enable kill switch for agent compliance' },
+    ],
+    compliance_frameworks: [
+      { framework: 'EU_AI_ACT', controls: ['Art.9', 'Art.14'] },
+      { framework: 'SOC2', controls: ['CC7.1'] },
+      { framework: 'NIST_800_53', controls: ['IR-4'] },
     ],
   },
 
@@ -586,6 +750,11 @@ const POLICY_TEMPLATES = {
       { type: 'flag', message: 'Agent session TTL exceeds 8-hour limit' },
       { type: 'kill_agent', message: 'Agent session terminated — TTL exceeded' },
     ],
+    compliance_frameworks: [
+      { framework: 'EU_AI_ACT', controls: ['Art.9'] },
+      { framework: 'SOC2', controls: ['CC6.1'] },
+      { framework: 'NIST_800_53', controls: ['AC-2'] },
+    ],
   },
 
   'agent-tool-whitelist': {
@@ -600,6 +769,11 @@ const POLICY_TEMPLATES = {
     actions: [
       { type: 'restrict_tools', message: 'Agent restricted to approved MCP tool whitelist' },
       { type: 'allow_with_logging', message: 'Approved tools allowed with enhanced audit logging' },
+    ],
+    compliance_frameworks: [
+      { framework: 'EU_AI_ACT', controls: ['Art.9'] },
+      { framework: 'SOC2', controls: ['CC6.3'] },
+      { framework: 'NIST_800_53', controls: ['AC-6'] },
     ],
   },
 
@@ -617,6 +791,11 @@ const POLICY_TEMPLATES = {
       { type: 'require_human_loop', message: 'Human-in-loop required for autonomous agent' },
       { type: 'flag', message: 'Autonomous agent operating without human oversight' },
     ],
+    compliance_frameworks: [
+      { framework: 'EU_AI_ACT', controls: ['Art.14'] },
+      { framework: 'SOC2', controls: ['CC6.3'] },
+      { framework: 'NIST_800_53', controls: ['AC-3'] },
+    ],
   },
 
   'low-score-quarantine': {
@@ -628,6 +807,11 @@ const POLICY_TEMPLATES = {
     actions: [
       { type: 'quarantine', message: 'Low security score — identity quarantined' },
       { type: 'notify', message: 'Identity scored below threshold, needs investigation' },
+    ],
+    compliance_frameworks: [
+      { framework: 'SOC2', controls: ['CC7.1', 'CC9.1'] },
+      { framework: 'NIST_800_53', controls: ['IR-4', 'CA-7'] },
+      { framework: 'ISO_27001', controls: ['A.8.16'] },
     ],
   },
 
@@ -643,6 +827,12 @@ const POLICY_TEMPLATES = {
     actions: [
       { type: 'flag', message: 'Production workload has insufficient trust level' },
       { type: 'require_attest', message: 'Re-attestation required for production access' },
+    ],
+    compliance_frameworks: [
+      { framework: 'SOC2', controls: ['CC6.1', 'CC6.3'] },
+      { framework: 'NIST_800_53', controls: ['AC-3', 'IA-2'] },
+      { framework: 'ISO_27001', controls: ['A.5.15', 'A.8.5'] },
+      { framework: 'PCI_DSS', controls: ['7.1'] },
     ],
   },
 
@@ -662,6 +852,12 @@ const POLICY_TEMPLATES = {
       { type: 'flag', message: 'Orphaned NHI from deprovisioned owner' },
       { type: 'schedule_decommission', message: 'Scheduled for decommission in 14 days' },
     ],
+    compliance_frameworks: [
+      { framework: 'SOC2', controls: ['CC6.1', 'CC6.2'] },
+      { framework: 'NIST_800_53', controls: ['AC-2'] },
+      { framework: 'ISO_27001', controls: ['A.9.2.1', 'A.9.2.6'] },
+      { framework: 'PCI_DSS', controls: ['8.1'] },
+    ],
   },
 
   // ── NHI2: Secret Leakage ──
@@ -675,6 +871,12 @@ const POLICY_TEMPLATES = {
       { type: 'flag', message: 'Secrets detected in application logs — critical leakage risk' },
       { type: 'quarantine', message: 'Workload quarantined until secret leakage remediated' },
     ],
+    compliance_frameworks: [
+      { framework: 'SOC2', controls: ['CC6.7', 'CC7.1'] },
+      { framework: 'NIST_800_53', controls: ['AU-3', 'SC-8'] },
+      { framework: 'ISO_27001', controls: ['A.5.33', 'A.8.15'] },
+      { framework: 'PCI_DSS', controls: ['3.5', '10.1'] },
+    ],
   },
 
   'secret-in-env-plaintext': {
@@ -686,6 +888,12 @@ const POLICY_TEMPLATES = {
     actions: [
       { type: 'flag', message: 'Plaintext secrets detected in environment variables' },
       { type: 'notify', message: 'Migrate to secrets manager (Vault, GCP SM, AWS SM)' },
+    ],
+    compliance_frameworks: [
+      { framework: 'SOC2', controls: ['CC6.7'] },
+      { framework: 'NIST_800_53', controls: ['SC-12', 'SC-8'] },
+      { framework: 'ISO_27001', controls: ['A.8.24'] },
+      { framework: 'PCI_DSS', controls: ['3.5'] },
     ],
   },
 
@@ -703,6 +911,11 @@ const POLICY_TEMPLATES = {
       { type: 'flag', message: 'Third-party integration not reviewed in 90+ days' },
       { type: 'require_attest', message: 'Quarterly review required for third-party NHI' },
     ],
+    compliance_frameworks: [
+      { framework: 'SOC2', controls: ['CC9.1', 'CC6.1'] },
+      { framework: 'NIST_800_53', controls: ['CA-7', 'AC-2'] },
+      { framework: 'ISO_27001', controls: ['A.5.23'] },
+    ],
   },
 
   // ── NHI5: Overprivileged NHI ──
@@ -719,6 +932,11 @@ const POLICY_TEMPLATES = {
       { type: 'flag', message: 'Production NHI holds overprivileged primitive role' },
       { type: 'downgrade_permissions', message: 'Replace with custom least-privilege role' },
     ],
+    compliance_frameworks: [
+      { framework: 'SOC2', controls: ['CC6.3'] },
+      { framework: 'NIST_800_53', controls: ['AC-6'] },
+      { framework: 'ISO_27001', controls: ['A.8.2'] },
+    ],
   },
 
   'unused-permissions-cleanup': {
@@ -733,6 +951,11 @@ const POLICY_TEMPLATES = {
     actions: [
       { type: 'flag', message: 'NHI has 5+ unused permissions for 60+ days' },
       { type: 'notify', message: 'Revoke unused permissions to reduce blast radius' },
+    ],
+    compliance_frameworks: [
+      { framework: 'SOC2', controls: ['CC6.3'] },
+      { framework: 'NIST_800_53', controls: ['AC-6', 'AC-2'] },
+      { framework: 'ISO_27001', controls: ['A.9.2.6'] },
     ],
   },
 
@@ -750,6 +973,12 @@ const POLICY_TEMPLATES = {
       { type: 'flag', message: 'CI/CD pipeline uses static credentials instead of OIDC' },
       { type: 'quarantine', message: 'Pipeline quarantined until OIDC migration complete' },
     ],
+    compliance_frameworks: [
+      { framework: 'SOC2', controls: ['CC6.1', 'CC8.1'] },
+      { framework: 'NIST_800_53', controls: ['IA-2', 'CM-3'] },
+      { framework: 'ISO_27001', controls: ['A.8.5', 'A.8.9'] },
+      { framework: 'PCI_DSS', controls: ['8.3'] },
+    ],
   },
 
   'cicd-no-prod-creds-in-pr': {
@@ -765,6 +994,12 @@ const POLICY_TEMPLATES = {
     actions: [
       { type: 'deny', message: 'Production credentials in non-production pipeline build' },
       { type: 'flag', message: 'PR/feature build has production credential access' },
+    ],
+    compliance_frameworks: [
+      { framework: 'SOC2', controls: ['CC6.1', 'CC8.1'] },
+      { framework: 'NIST_800_53', controls: ['AC-3', 'CM-3'] },
+      { framework: 'ISO_27001', controls: ['A.8.3', 'A.8.9'] },
+      { framework: 'PCI_DSS', controls: ['7.2'] },
     ],
   },
 
@@ -782,6 +1017,12 @@ const POLICY_TEMPLATES = {
       { type: 'flag', message: 'Long-lived API key detected (>90 days)' },
       { type: 'force_rotation', message: 'Replace with short-lived token or rotate immediately' },
     ],
+    compliance_frameworks: [
+      { framework: 'SOC2', controls: ['CC6.1'] },
+      { framework: 'NIST_800_53', controls: ['IA-5'] },
+      { framework: 'ISO_27001', controls: ['A.5.17'] },
+      { framework: 'PCI_DSS', controls: ['8.2.4'] },
+    ],
   },
 
   'certificate-expiry-30d': {
@@ -796,6 +1037,11 @@ const POLICY_TEMPLATES = {
     actions: [
       { type: 'flag', message: 'Certificate expiring within 30 days' },
       { type: 'notify', message: 'Certificate renewal required' },
+    ],
+    compliance_frameworks: [
+      { framework: 'SOC2', controls: ['CC6.1'] },
+      { framework: 'NIST_800_53', controls: ['SC-12'] },
+      { framework: 'ISO_27001', controls: ['A.8.24'] },
     ],
   },
 
@@ -813,6 +1059,12 @@ const POLICY_TEMPLATES = {
       { type: 'flag', message: 'User-managed key older than 14 days — high leak risk' },
       { type: 'disable_identity', message: 'Use workload identity federation instead' },
     ],
+    compliance_frameworks: [
+      { framework: 'SOC2', controls: ['CC6.1'] },
+      { framework: 'NIST_800_53', controls: ['IA-5', 'SC-12'] },
+      { framework: 'ISO_27001', controls: ['A.5.17', 'A.8.24'] },
+      { framework: 'PCI_DSS', controls: ['8.6'] },
+    ],
   },
 
   // ── NHI8: Environment Isolation ──
@@ -825,6 +1077,12 @@ const POLICY_TEMPLATES = {
     actions: [
       { type: 'deny', message: 'Credential used across multiple environments' },
       { type: 'flag', message: 'Same credential in multiple environments — isolation violation' },
+    ],
+    compliance_frameworks: [
+      { framework: 'SOC2', controls: ['CC6.3'] },
+      { framework: 'NIST_800_53', controls: ['AC-4'] },
+      { framework: 'ISO_27001', controls: ['A.8.3'] },
+      { framework: 'PCI_DSS', controls: ['7.2'] },
     ],
   },
 
@@ -842,6 +1100,12 @@ const POLICY_TEMPLATES = {
       { type: 'flag', message: 'Service account shared across multiple workloads' },
       { type: 'quarantine', message: 'Shared SA quarantined until workloads are separated' },
     ],
+    compliance_frameworks: [
+      { framework: 'SOC2', controls: ['CC6.1', 'CC6.3'] },
+      { framework: 'NIST_800_53', controls: ['AC-2', 'AC-6'] },
+      { framework: 'ISO_27001', controls: ['A.5.16', 'A.8.2'] },
+      { framework: 'PCI_DSS', controls: ['8.6'] },
+    ],
   },
 
   // ── NHI10: Human Use of NHI (Midnight Blizzard) ──
@@ -858,6 +1122,12 @@ const POLICY_TEMPLATES = {
       { type: 'deny', message: 'Service accounts cannot be used from interactive sessions' },
       { type: 'flag', message: 'Human interactive session using NHI credentials' },
     ],
+    compliance_frameworks: [
+      { framework: 'SOC2', controls: ['CC6.3', 'CC7.1'] },
+      { framework: 'NIST_800_53', controls: ['AC-2', 'SI-4'] },
+      { framework: 'ISO_27001', controls: ['A.8.2', 'A.8.16'] },
+      { framework: 'PCI_DSS', controls: ['10.2'] },
+    ],
   },
 
   'anomalous-access-pattern': {
@@ -872,6 +1142,11 @@ const POLICY_TEMPLATES = {
     actions: [
       { type: 'flag', message: 'First-time access during off-hours — anomaly detected' },
       { type: 'require_approval', message: 'Manual approval required for anomalous access' },
+    ],
+    compliance_frameworks: [
+      { framework: 'SOC2', controls: ['CC7.1', 'CC7.2'] },
+      { framework: 'NIST_800_53', controls: ['SI-4', 'IR-4'] },
+      { framework: 'ISO_27001', controls: ['A.8.16'] },
     ],
   },
 
@@ -888,6 +1163,12 @@ const POLICY_TEMPLATES = {
       { type: 'deny', message: 'Public endpoint without authentication is prohibited' },
       { type: 'flag', message: 'Unauthenticated public endpoint detected' },
     ],
+    compliance_frameworks: [
+      { framework: 'SOC2', controls: ['CC6.6'] },
+      { framework: 'NIST_800_53', controls: ['AC-3', 'SC-7'] },
+      { framework: 'ISO_27001', controls: ['A.5.15'] },
+      { framework: 'PCI_DSS', controls: ['7.1'] },
+    ],
   },
 
   'public-resource-approval-required': {
@@ -903,6 +1184,11 @@ const POLICY_TEMPLATES = {
       { type: 'flag', message: 'Publicly accessible resource lacks security approval tag' },
       { type: 'notify', message: 'Requires approved-public label from security team' },
     ],
+    compliance_frameworks: [
+      { framework: 'SOC2', controls: ['CC6.6'] },
+      { framework: 'NIST_800_53', controls: ['SC-7'] },
+      { framework: 'ISO_27001', controls: ['A.5.15'] },
+    ],
   },
 
   'restrict-public-access': {
@@ -917,6 +1203,11 @@ const POLICY_TEMPLATES = {
     actions: [
       { type: 'deny', message: 'Unapproved public access is prohibited' },
       { type: 'quarantine', message: 'Resource quarantined until public access is reviewed' },
+    ],
+    compliance_frameworks: [
+      { framework: 'SOC2', controls: ['CC6.6'] },
+      { framework: 'NIST_800_53', controls: ['SC-7'] },
+      { framework: 'ISO_27001', controls: ['A.5.15'] },
     ],
   },
 
@@ -937,6 +1228,12 @@ const POLICY_TEMPLATES = {
       { type: 'flag', message: 'MCP server uses static credentials — critical risk' },
       { type: 'quarantine', message: 'MCP server quarantined until credential migration' },
     ],
+    compliance_frameworks: [
+      { framework: 'SOC2', controls: ['CC6.1'] },
+      { framework: 'NIST_800_53', controls: ['IA-5', 'SC-12'] },
+      { framework: 'ISO_27001', controls: ['A.5.17'] },
+      { framework: 'PCI_DSS', controls: ['8.6'] },
+    ],
   },
 
   'mcp-oauth-required': {
@@ -953,6 +1250,11 @@ const POLICY_TEMPLATES = {
       { type: 'deny', message: 'Remote MCP servers must implement OAuth 2.1' },
       { type: 'flag', message: 'Remote MCP without OAuth — violates MCP Auth Spec' },
     ],
+    compliance_frameworks: [
+      { framework: 'SOC2', controls: ['CC6.1'] },
+      { framework: 'NIST_800_53', controls: ['IA-2'] },
+      { framework: 'ISO_27001', controls: ['A.8.5'] },
+    ],
   },
 
   'mcp-token-passthrough-ban': {
@@ -967,6 +1269,11 @@ const POLICY_TEMPLATES = {
     actions: [
       { type: 'deny', message: 'Token passthrough prohibited — confused deputy vulnerability' },
       { type: 'flag', message: 'MCP server passing client tokens to upstream APIs' },
+    ],
+    compliance_frameworks: [
+      { framework: 'EU_AI_ACT', controls: ['Art.15'] },
+      { framework: 'SOC2', controls: ['CC6.3'] },
+      { framework: 'NIST_800_53', controls: ['AC-3'] },
     ],
   },
 
@@ -984,6 +1291,11 @@ const POLICY_TEMPLATES = {
       { type: 'deny', message: 'Local MCP server must bind to localhost' },
       { type: 'flag', message: 'MCP server exposed on network interface' },
     ],
+    compliance_frameworks: [
+      { framework: 'SOC2', controls: ['CC6.6'] },
+      { framework: 'NIST_800_53', controls: ['SC-7'] },
+      { framework: 'ISO_27001', controls: ['A.5.15'] },
+    ],
   },
 
   'mcp-server-registry-verification': {
@@ -999,6 +1311,11 @@ const POLICY_TEMPLATES = {
       { type: 'deny', message: 'Only verified MCP servers permitted in production' },
       { type: 'flag', message: 'MCP server from unverified registry' },
     ],
+    compliance_frameworks: [
+      { framework: 'EU_AI_ACT', controls: ['Art.17'] },
+      { framework: 'SOC2', controls: ['CC6.8'] },
+      { framework: 'NIST_800_53', controls: ['CM-3'] },
+    ],
   },
 
   'tool-poisoning-prevention': {
@@ -1013,6 +1330,11 @@ const POLICY_TEMPLATES = {
     actions: [
       { type: 'restrict_tools', message: 'Unvalidated tools blocked until schema review' },
       { type: 'flag', message: 'MCP tools not validated — tool poisoning risk' },
+    ],
+    compliance_frameworks: [
+      { framework: 'EU_AI_ACT', controls: ['Art.15'] },
+      { framework: 'SOC2', controls: ['CC6.8'] },
+      { framework: 'NIST_800_53', controls: ['SI-4'] },
     ],
   },
 
@@ -1030,6 +1352,11 @@ const POLICY_TEMPLATES = {
       { type: 'deny', message: 'A2A agent accepts tasks without authentication' },
       { type: 'flag', message: 'Unauthenticated A2A agent detected' },
     ],
+    compliance_frameworks: [
+      { framework: 'SOC2', controls: ['CC6.1'] },
+      { framework: 'NIST_800_53', controls: ['IA-2'] },
+      { framework: 'ISO_27001', controls: ['A.8.5'] },
+    ],
   },
 
   'a2a-agent-card-signing': {
@@ -1044,6 +1371,11 @@ const POLICY_TEMPLATES = {
     actions: [
       { type: 'flag', message: 'A2A Agent Card is not signed (no JWS)' },
       { type: 'notify', message: 'Sign Agent Card with JWS for authenticity' },
+    ],
+    compliance_frameworks: [
+      { framework: 'SOC2', controls: ['CC6.1'] },
+      { framework: 'NIST_800_53', controls: ['IA-5'] },
+      { framework: 'ISO_27001', controls: ['A.8.24'] },
     ],
   },
 
@@ -1061,6 +1393,11 @@ const POLICY_TEMPLATES = {
       { type: 'deny', message: 'Toxic combination: financial + CRM on same agent' },
       { type: 'flag', message: 'Agent holds both financial and CRM credentials' },
     ],
+    compliance_frameworks: [
+      { framework: 'SOC2', controls: ['CC6.3', 'CC9.1'] },
+      { framework: 'NIST_800_53', controls: ['AC-6'] },
+      { framework: 'PCI_DSS', controls: ['7.2'] },
+    ],
   },
 
   'toxic-combo-code-infra': {
@@ -1075,6 +1412,10 @@ const POLICY_TEMPLATES = {
       { type: 'deny', message: 'Toxic combination: code repo + infra admin credentials' },
       { type: 'flag', message: 'Supply chain risk: code + infra on same identity' },
     ],
+    compliance_frameworks: [
+      { framework: 'SOC2', controls: ['CC6.3', 'CC9.1'] },
+      { framework: 'NIST_800_53', controls: ['AC-6'] },
+    ],
   },
 
   // ── OBO Delegation Chain ──
@@ -1088,6 +1429,11 @@ const POLICY_TEMPLATES = {
       { type: 'deny', message: 'OBO delegation chain exceeds max depth (3 hops)' },
       { type: 'kill_agent', message: 'Agent terminated — delegation chain too deep' },
     ],
+    compliance_frameworks: [
+      { framework: 'EU_AI_ACT', controls: ['Art.12'] },
+      { framework: 'SOC2', controls: ['CC7.2'] },
+      { framework: 'NIST_800_53', controls: ['AC-6'] },
+    ],
   },
 
   'obo-scope-must-narrow': {
@@ -1100,6 +1446,11 @@ const POLICY_TEMPLATES = {
       { type: 'deny', message: 'OBO scope exceeds parent — privilege escalation' },
       { type: 'kill_agent', message: 'Agent terminated — scope escalation in chain' },
     ],
+    compliance_frameworks: [
+      { framework: 'EU_AI_ACT', controls: ['Art.9'] },
+      { framework: 'SOC2', controls: ['CC6.3'] },
+      { framework: 'NIST_800_53', controls: ['AC-6'] },
+    ],
   },
 
   'obo-human-root-required': {
@@ -1111,6 +1462,11 @@ const POLICY_TEMPLATES = {
     actions: [
       { type: 'deny', message: 'No human root in delegation chain' },
       { type: 'kill_agent', message: 'Agent terminated — no human in chain' },
+    ],
+    compliance_frameworks: [
+      { framework: 'EU_AI_ACT', controls: ['Art.14', 'Art.26'] },
+      { framework: 'SOC2', controls: ['CC6.1'] },
+      { framework: 'NIST_800_53', controls: ['AC-2'] },
     ],
   },
 
@@ -1125,6 +1481,10 @@ const POLICY_TEMPLATES = {
     ],
     actions: [
       { type: 'flag', message: 'OBO token TTL not shortened at delegation hop' },
+    ],
+    compliance_frameworks: [
+      { framework: 'SOC2', controls: ['CC6.1'] },
+      { framework: 'NIST_800_53', controls: ['IA-5'] },
     ],
   },
 
@@ -1142,6 +1502,12 @@ const POLICY_TEMPLATES = {
       { type: 'deny', message: 'External API access without credential broker is prohibited' },
       { type: 'flag', message: 'Static credentials — must use JIT credential broker' },
     ],
+    compliance_frameworks: [
+      { framework: 'SOC2', controls: ['CC6.1'] },
+      { framework: 'NIST_800_53', controls: ['IA-5', 'AC-2'] },
+      { framework: 'ISO_27001', controls: ['A.5.17'] },
+      { framework: 'PCI_DSS', controls: ['8.6'] },
+    ],
   },
 
   'jit-token-max-ttl': {
@@ -1152,6 +1518,10 @@ const POLICY_TEMPLATES = {
     conditions: [{ field: 'credential.ttl_minutes', operator: 'gt', value: '5' }],
     actions: [
       { type: 'flag', message: 'JIT token TTL exceeds 5-minute limit' },
+    ],
+    compliance_frameworks: [
+      { framework: 'SOC2', controls: ['CC6.1'] },
+      { framework: 'NIST_800_53', controls: ['IA-5'] },
     ],
   },
 
@@ -1164,6 +1534,10 @@ const POLICY_TEMPLATES = {
     actions: [
       { type: 'deny', message: 'Wildcard JIT credentials are prohibited' },
       { type: 'flag', message: 'JIT credential has wildcard scope' },
+    ],
+    compliance_frameworks: [
+      { framework: 'SOC2', controls: ['CC6.3'] },
+      { framework: 'NIST_800_53', controls: ['AC-6'] },
     ],
   },
 
@@ -1181,6 +1555,11 @@ const POLICY_TEMPLATES = {
       { type: 'flag', message: 'Agent consent expired (>24 hours)' },
       { type: 'require_human_loop', message: 'Re-consent required from delegator' },
     ],
+    compliance_frameworks: [
+      { framework: 'EU_AI_ACT', controls: ['Art.14', 'Art.26'] },
+      { framework: 'SOC2', controls: ['CC6.1'] },
+      { framework: 'NIST_800_53', controls: ['AC-2'] },
+    ],
   },
 
   'agent-multi-tool-approval': {
@@ -1195,6 +1574,11 @@ const POLICY_TEMPLATES = {
     actions: [
       { type: 'require_approval', message: 'Multi-tool chain (3+) requires human approval' },
       { type: 'flag', message: 'Complex agent tool chain detected' },
+    ],
+    compliance_frameworks: [
+      { framework: 'EU_AI_ACT', controls: ['Art.14'] },
+      { framework: 'SOC2', controls: ['CC6.3'] },
+      { framework: 'NIST_800_53', controls: ['AC-3'] },
     ],
   },
 
@@ -1217,6 +1601,10 @@ const POLICY_TEMPLATES = {
       { type: 'flag', message: 'MCP server not using validated OAuth 2.1 flow — vulnerable to CVE-2025-6514 style attack' },
       { type: 'block_deploy', message: 'MCP servers must use OAuth 2.1 with validated discovery endpoints' },
     ],
+    compliance_frameworks: [
+      { framework: 'SOC2', controls: ['CC6.1'] },
+      { framework: 'NIST_800_53', controls: ['IA-2'] },
+    ],
   },
 
   // GitHub MCP Data Heist (Invariant Labs, 2025)
@@ -1233,6 +1621,10 @@ const POLICY_TEMPLATES = {
       { type: 'flag', message: 'GitHub MCP integration detected — verify token scope is minimal (no repo:write, no admin)' },
       { type: 'require_review', message: 'GitHub MCP tokens must be reviewed for least-privilege scope' },
     ],
+    compliance_frameworks: [
+      { framework: 'SOC2', controls: ['CC6.3'] },
+      { framework: 'NIST_800_53', controls: ['AC-6'] },
+    ],
   },
 
   // WhatsApp MCP Tool Poisoning (2025)
@@ -1248,6 +1640,11 @@ const POLICY_TEMPLATES = {
     actions: [
       { type: 'flag', message: 'MCP server must sanitize tool descriptions — tool poisoning can exfiltrate data via hidden instructions' },
       { type: 'require_review', message: 'Audit MCP tool metadata for hidden prompt injection payloads' },
+    ],
+    compliance_frameworks: [
+      { framework: 'EU_AI_ACT', controls: ['Art.15'] },
+      { framework: 'SOC2', controls: ['CC6.8'] },
+      { framework: 'NIST_800_53', controls: ['SI-4'] },
     ],
   },
 
@@ -1266,6 +1663,11 @@ const POLICY_TEMPLATES = {
       { type: 'flag', message: 'Privileged agent must isolate untrusted input processing from tool execution' },
       { type: 'require_sandbox', message: 'Input processing must be sandboxed from privileged tool access' },
     ],
+    compliance_frameworks: [
+      { framework: 'EU_AI_ACT', controls: ['Art.15'] },
+      { framework: 'SOC2', controls: ['CC6.8'] },
+      { framework: 'NIST_800_53', controls: ['SI-4'] },
+    ],
   },
 
   // Anthropic SQLite MCP SQLi → Stored Prompt Injection (Trend Micro, June 2025)
@@ -1281,6 +1683,10 @@ const POLICY_TEMPLATES = {
     actions: [
       { type: 'flag', message: 'MCP server with database access must use parameterized queries — SQLi leads to stored prompt injection' },
       { type: 'require_review', message: 'Audit all database queries in MCP server for parameterization' },
+    ],
+    compliance_frameworks: [
+      { framework: 'SOC2', controls: ['CC6.8'] },
+      { framework: 'NIST_800_53', controls: ['SI-4'] },
     ],
   },
 
@@ -1298,6 +1704,10 @@ const POLICY_TEMPLATES = {
       { type: 'flag', message: 'MCP server must not pass unsanitized input to shell commands — RCE risk (Figma MCP CVE)' },
       { type: 'block_deploy', message: 'MCP servers using child_process.exec with user input are blocked' },
     ],
+    compliance_frameworks: [
+      { framework: 'SOC2', controls: ['CC6.8'] },
+      { framework: 'NIST_800_53', controls: ['SI-4'] },
+    ],
   },
 
   // Microsoft MarkItDown SSRF (Jan 2026) — 36.7% of MCP servers vulnerable
@@ -1313,6 +1723,10 @@ const POLICY_TEMPLATES = {
     actions: [
       { type: 'flag', message: 'MCP server must validate URIs to prevent SSRF — 36.7% of servers found vulnerable' },
       { type: 'restrict_network', message: 'MCP server egress must be restricted to approved destinations' },
+    ],
+    compliance_frameworks: [
+      { framework: 'SOC2', controls: ['CC6.6'] },
+      { framework: 'NIST_800_53', controls: ['SC-7'] },
     ],
   },
 
@@ -1330,6 +1744,11 @@ const POLICY_TEMPLATES = {
       { type: 'flag', message: 'Git MCP must sanitize repo content — prompt injection via malicious issues/PRs (CVE-2025-68143)' },
       { type: 'require_review', message: 'Git MCP server must be v2025.12.18 or later' },
     ],
+    compliance_frameworks: [
+      { framework: 'EU_AI_ACT', controls: ['Art.15'] },
+      { framework: 'SOC2', controls: ['CC6.8'] },
+      { framework: 'NIST_800_53', controls: ['SI-4'] },
+    ],
   },
 
   // CVE-2025-6515: MCP prompt hijacking / session takeover
@@ -1344,6 +1763,10 @@ const POLICY_TEMPLATES = {
     actions: [
       { type: 'flag', message: 'MCP sessions must use signed request tokens to prevent prompt hijacking (CVE-2025-6515)' },
       { type: 'require_tls', message: 'All MCP communication must use mutual TLS' },
+    ],
+    compliance_frameworks: [
+      { framework: 'SOC2', controls: ['CC6.1'] },
+      { framework: 'NIST_800_53', controls: ['SC-8'] },
     ],
   },
 
@@ -1360,6 +1783,10 @@ const POLICY_TEMPLATES = {
       { type: 'flag', message: 'IDE MCP integrations must be containerized or sandboxed — RCE risk from Cursor CVE' },
       { type: 'require_container', message: 'MCP server must run in isolated container' },
     ],
+    compliance_frameworks: [
+      { framework: 'SOC2', controls: ['CC6.6'] },
+      { framework: 'NIST_800_53', controls: ['SC-7'] },
+    ],
   },
 
   // MCP localhost exploitation (Tenable, 2025)
@@ -1375,6 +1802,10 @@ const POLICY_TEMPLATES = {
     actions: [
       { type: 'flag', message: 'MCP server must not trust localhost — drive-by exploitation via malicious websites' },
       { type: 'require_auth', message: 'All MCP endpoints require authentication, even localhost' },
+    ],
+    compliance_frameworks: [
+      { framework: 'SOC2', controls: ['CC6.6'] },
+      { framework: 'NIST_800_53', controls: ['SC-7'] },
     ],
   },
 
@@ -1393,6 +1824,11 @@ const POLICY_TEMPLATES = {
       { type: 'flag', message: 'MCP server not verified — typosquatting risk from supply chain attacks' },
       { type: 'block_deploy', message: 'Only verified MCP servers from approved registries allowed' },
     ],
+    compliance_frameworks: [
+      { framework: 'EU_AI_ACT', controls: ['Art.17'] },
+      { framework: 'SOC2', controls: ['CC6.8'] },
+      { framework: 'NIST_800_53', controls: ['CM-3'] },
+    ],
   },
 
   // ── Allow Templates for Agent Governance ──
@@ -1407,6 +1843,11 @@ const POLICY_TEMPLATES = {
       { field: 'server.is_ai_agent', operator: 'is_true', value: true },
     ],
     actions: [{ type: 'log', message: 'User invoking AI agent — permitted' }],
+    compliance_frameworks: [
+      { framework: 'EU_AI_ACT', controls: ['Art.14'] },
+      { framework: 'SOC2', controls: ['CC6.3'] },
+      { framework: 'NIST_800_53', controls: ['AC-3'] },
+    ],
   },
 
   'allow-agent-mcp-access': {
@@ -1419,6 +1860,11 @@ const POLICY_TEMPLATES = {
       { field: 'server.is_mcp_server', operator: 'is_true', value: true },
     ],
     actions: [{ type: 'log', message: 'AI agent accessing MCP server — scope ceiling enforced' }],
+    compliance_frameworks: [
+      { framework: 'EU_AI_ACT', controls: ['Art.9'] },
+      { framework: 'SOC2', controls: ['CC6.3'] },
+      { framework: 'NIST_800_53', controls: ['AC-3'] },
+    ],
   },
 
   'allow-jit-credential-request': {
@@ -1431,6 +1877,10 @@ const POLICY_TEMPLATES = {
       { field: 'client.trust_level', operator: 'in', value: ['cryptographic', 'very-high', 'high'] },
     ],
     actions: [{ type: 'log', message: 'JIT credential request — trust level verified' }],
+    compliance_frameworks: [
+      { framework: 'SOC2', controls: ['CC6.1'] },
+      { framework: 'NIST_800_53', controls: ['AC-2', 'IA-5'] },
+    ],
   },
 
   'allow-agent-delegation': {
@@ -1444,6 +1894,11 @@ const POLICY_TEMPLATES = {
       { field: 'client.trust_level', operator: 'in', value: ['cryptographic', 'very-high', 'high'] },
     ],
     actions: [{ type: 'log', message: 'Agent delegation — scope ceiling inherited from delegator' }],
+    compliance_frameworks: [
+      { framework: 'EU_AI_ACT', controls: ['Art.14'] },
+      { framework: 'SOC2', controls: ['CC6.3'] },
+      { framework: 'NIST_800_53', controls: ['AC-3'] },
+    ],
   },
 
   'allow-internal-service-mesh': {
@@ -1457,6 +1912,10 @@ const POLICY_TEMPLATES = {
       { field: 'client.trust_level', operator: 'in', value: ['cryptographic', 'very-high', 'high'] },
     ],
     actions: [{ type: 'log', message: 'Internal service mesh — permitted' }],
+    compliance_frameworks: [
+      { framework: 'SOC2', controls: ['CC6.6'] },
+      { framework: 'NIST_800_53', controls: ['SC-7'] },
+    ],
   },
 
   // ── Deny Templates for Agent Governance ──
@@ -1471,6 +1930,11 @@ const POLICY_TEMPLATES = {
       { field: 'server.cloud_provider', operator: 'equals', value: 'external' },
     ],
     actions: [{ type: 'log', message: 'BLOCKED: AI agent direct external API access — must use JIT vault' }],
+    compliance_frameworks: [
+      { framework: 'EU_AI_ACT', controls: ['Art.9'] },
+      { framework: 'SOC2', controls: ['CC6.6'] },
+      { framework: 'NIST_800_53', controls: ['SC-7'] },
+    ],
   },
 
   'deny-shared-sa-external': {
@@ -1483,6 +1947,11 @@ const POLICY_TEMPLATES = {
       { field: 'server.category', operator: 'in', value: ['External APIs', 'Security Services'] },
     ],
     actions: [{ type: 'log', message: 'BLOCKED: Shared SA accessing external/credential services' }],
+    compliance_frameworks: [
+      { framework: 'SOC2', controls: ['CC6.3'] },
+      { framework: 'NIST_800_53', controls: ['AC-6'] },
+      { framework: 'PCI_DSS', controls: ['8.6'] },
+    ],
   },
 
   'deny-untrusted-agent-invocation': {
@@ -1495,6 +1964,11 @@ const POLICY_TEMPLATES = {
       { field: 'server.is_ai_agent', operator: 'is_true', value: true },
     ],
     actions: [{ type: 'log', message: 'BLOCKED: Untrusted workload invoking AI agent' }],
+    compliance_frameworks: [
+      { framework: 'EU_AI_ACT', controls: ['Art.9'] },
+      { framework: 'SOC2', controls: ['CC6.3'] },
+      { framework: 'NIST_800_53', controls: ['AC-3'] },
+    ],
   },
 
   // Agent confused deputy prevention  
@@ -1510,6 +1984,11 @@ const POLICY_TEMPLATES = {
     actions: [
       { type: 'flag', message: 'MCP server must verify caller identity before using stored OAuth tokens — confused deputy risk' },
       { type: 'require_identity_binding', message: 'Each OAuth token must be bound to a specific caller identity' },
+    ],
+    compliance_frameworks: [
+      { framework: 'EU_AI_ACT', controls: ['Art.15'] },
+      { framework: 'SOC2', controls: ['CC6.3'] },
+      { framework: 'NIST_800_53', controls: ['AC-3'] },
     ],
   },
 
@@ -1527,6 +2006,11 @@ const POLICY_TEMPLATES = {
       { type: 'flag', message: 'Agent external data transmission must pass through DLP gateway' },
       { type: 'restrict_egress', message: 'Agent egress restricted to approved API endpoints only' },
     ],
+    compliance_frameworks: [
+      { framework: 'SOC2', controls: ['CC6.7'] },
+      { framework: 'NIST_800_53', controls: ['AC-4'] },
+      { framework: 'ISO_27001', controls: ['A.8.3'] },
+    ],
   },
 
   // MCP tool permission over-provisioning (Noma: 90% have dangerous defaults)
@@ -1543,6 +2027,10 @@ const POLICY_TEMPLATES = {
       { type: 'flag', message: 'MCP server must explicitly whitelist allowed tools — disable destructive operations by default' },
       { type: 'restrict_tools', message: 'Only approved tools enabled per deployment profile' },
     ],
+    compliance_frameworks: [
+      { framework: 'SOC2', controls: ['CC6.3'] },
+      { framework: 'NIST_800_53', controls: ['AC-6'] },
+    ],
   },
 
   // Agent attribution / audit trail
@@ -1558,6 +2046,11 @@ const POLICY_TEMPLATES = {
     actions: [
       { type: 'flag', message: 'Agent actions must include attribution chain: human delegator → agent → tool' },
       { type: 'require_audit_log', message: 'All agent actions logged with full attribution chain' },
+    ],
+    compliance_frameworks: [
+      { framework: 'EU_AI_ACT', controls: ['Art.12', 'Art.13'] },
+      { framework: 'SOC2', controls: ['CC7.2'] },
+      { framework: 'NIST_800_53', controls: ['AU-3'] },
     ],
   },
 
@@ -1577,6 +2070,10 @@ const POLICY_TEMPLATES = {
       { type: 'flag', message: 'AI daily cost limit exceeded' },
     ],
     effect: 'deny',
+    compliance_frameworks: [
+      { framework: 'EU_AI_ACT', controls: ['Art.9'] },
+      { framework: 'SOC2', controls: ['CC9.1'] },
+    ],
   },
 
   'ai-daily-request-limit': {
@@ -1591,6 +2088,10 @@ const POLICY_TEMPLATES = {
       { type: 'flag', message: 'AI daily request limit exceeded' },
     ],
     effect: 'deny',
+    compliance_frameworks: [
+      { framework: 'EU_AI_ACT', controls: ['Art.9'] },
+      { framework: 'SOC2', controls: ['CC9.1'] },
+    ],
   },
 
   'ai-provider-restriction': {
@@ -1605,6 +2106,10 @@ const POLICY_TEMPLATES = {
       { type: 'flag', message: 'Unapproved AI provider detected' },
     ],
     effect: 'deny',
+    compliance_frameworks: [
+      { framework: 'EU_AI_ACT', controls: ['Art.9', 'Art.17'] },
+      { framework: 'SOC2', controls: ['CC9.1'] },
+    ],
   },
 
   // ══════════════════════════════════════════════════════════════════════════
@@ -1624,6 +2129,11 @@ const POLICY_TEMPLATES = {
       { type: 'deny', message: 'Unrestricted iam:PassRole is prohibited' },
       { type: 'flag', message: 'Scope PassRole to specific role ARNs' },
     ],
+    compliance_frameworks: [
+      { framework: 'SOC2', controls: ['CC6.3'] },
+      { framework: 'NIST_800_53', controls: ['AC-6'] },
+      { framework: 'ISO_27001', controls: ['A.8.2'] },
+    ],
   },
 
   'permission-boundary-required': {
@@ -1638,6 +2148,11 @@ const POLICY_TEMPLATES = {
     actions: [
       { type: 'flag', message: 'IAM entity missing permission boundary' },
       { type: 'notify', message: 'Attach a permission boundary to limit blast radius' },
+    ],
+    compliance_frameworks: [
+      { framework: 'SOC2', controls: ['CC6.3'] },
+      { framework: 'NIST_800_53', controls: ['AC-6'] },
+      { framework: 'ISO_27001', controls: ['A.8.2'] },
     ],
   },
 
@@ -1654,6 +2169,11 @@ const POLICY_TEMPLATES = {
       { type: 'deny', message: 'Cross-account trust without external ID is prohibited' },
       { type: 'flag', message: 'Add external ID condition to trust policy' },
     ],
+    compliance_frameworks: [
+      { framework: 'SOC2', controls: ['CC6.3'] },
+      { framework: 'NIST_800_53', controls: ['AC-3', 'IA-8'] },
+      { framework: 'ISO_27001', controls: ['A.5.23'] },
+    ],
   },
 
   'restrict-trust-principal': {
@@ -1666,6 +2186,11 @@ const POLICY_TEMPLATES = {
     ],
     actions: [
       { type: 'deny', message: 'Wildcard trust principal is prohibited' },
+    ],
+    compliance_frameworks: [
+      { framework: 'SOC2', controls: ['CC6.3'] },
+      { framework: 'NIST_800_53', controls: ['AC-3'] },
+      { framework: 'ISO_27001', controls: ['A.8.2'] },
     ],
   },
 
@@ -1681,6 +2206,12 @@ const POLICY_TEMPLATES = {
     actions: [
       { type: 'flag', message: 'Cross-account trust to account outside organization' },
       { type: 'require_approval', message: 'Security team approval required for external trust' },
+    ],
+    compliance_frameworks: [
+      { framework: 'SOC2', controls: ['CC6.3', 'CC6.6'] },
+      { framework: 'NIST_800_53', controls: ['AC-3', 'AC-4'] },
+      { framework: 'ISO_27001', controls: ['A.5.15', 'A.5.23'] },
+      { framework: 'PCI_DSS', controls: ['7.1'] },
     ],
   },
 
@@ -1701,6 +2232,12 @@ const POLICY_TEMPLATES = {
       { type: 'deny', message: 'Public bucket access is prohibited' },
       { type: 'quarantine', message: 'Bucket quarantined until public access removed' },
     ],
+    compliance_frameworks: [
+      { framework: 'SOC2', controls: ['CC6.6', 'CC6.7'] },
+      { framework: 'NIST_800_53', controls: ['SC-7', 'AC-3'] },
+      { framework: 'ISO_27001', controls: ['A.8.3'] },
+      { framework: 'PCI_DSS', controls: ['7.1'] },
+    ],
   },
 
   'encryption-at-rest-required': {
@@ -1714,6 +2251,12 @@ const POLICY_TEMPLATES = {
     actions: [
       { type: 'flag', message: 'Data store lacks encryption at rest' },
       { type: 'notify', message: 'Enable encryption using customer-managed KMS key' },
+    ],
+    compliance_frameworks: [
+      { framework: 'SOC2', controls: ['CC6.7'] },
+      { framework: 'NIST_800_53', controls: ['SC-12'] },
+      { framework: 'ISO_27001', controls: ['A.8.24'] },
+      { framework: 'PCI_DSS', controls: ['3.5'] },
     ],
   },
 
@@ -1730,6 +2273,12 @@ const POLICY_TEMPLATES = {
       { type: 'deny', message: 'Public database access is prohibited' },
       { type: 'quarantine', message: 'Database quarantined until access restricted' },
     ],
+    compliance_frameworks: [
+      { framework: 'SOC2', controls: ['CC6.6'] },
+      { framework: 'NIST_800_53', controls: ['SC-7', 'AC-3'] },
+      { framework: 'ISO_27001', controls: ['A.8.3'] },
+      { framework: 'PCI_DSS', controls: ['7.1'] },
+    ],
   },
 
   'db-iam-auth-required': {
@@ -1745,6 +2294,12 @@ const POLICY_TEMPLATES = {
       { type: 'flag', message: 'Database using password auth instead of IAM' },
       { type: 'notify', message: 'Enable IAM authentication for passwordless access' },
     ],
+    compliance_frameworks: [
+      { framework: 'SOC2', controls: ['CC6.1'] },
+      { framework: 'NIST_800_53', controls: ['IA-2'] },
+      { framework: 'ISO_27001', controls: ['A.8.5'] },
+      { framework: 'PCI_DSS', controls: ['8.3'] },
+    ],
   },
 
   'backup-pitr-required': {
@@ -1758,6 +2313,11 @@ const POLICY_TEMPLATES = {
     ],
     actions: [
       { type: 'flag', message: 'Database backup/PITR not enabled' },
+    ],
+    compliance_frameworks: [
+      { framework: 'SOC2', controls: ['CC9.1'] },
+      { framework: 'NIST_800_53', controls: ['IR-4'] },
+      { framework: 'ISO_27001', controls: ['A.5.33'] },
     ],
   },
 
@@ -1778,6 +2338,12 @@ const POLICY_TEMPLATES = {
       { type: 'deny', message: 'Unrestricted public ingress is prohibited' },
       { type: 'flag', message: 'Restrict source CIDR to internal ranges' },
     ],
+    compliance_frameworks: [
+      { framework: 'SOC2', controls: ['CC6.6'] },
+      { framework: 'NIST_800_53', controls: ['SC-7'] },
+      { framework: 'ISO_27001', controls: ['A.5.15'] },
+      { framework: 'PCI_DSS', controls: ['7.1'] },
+    ],
   },
 
   'private-subnet-required': {
@@ -1793,6 +2359,12 @@ const POLICY_TEMPLATES = {
       { type: 'flag', message: 'Sensitive workload in public subnet' },
       { type: 'notify', message: 'Move to private subnet with NAT gateway for outbound' },
     ],
+    compliance_frameworks: [
+      { framework: 'SOC2', controls: ['CC6.6'] },
+      { framework: 'NIST_800_53', controls: ['SC-7'] },
+      { framework: 'ISO_27001', controls: ['A.5.15'] },
+      { framework: 'PCI_DSS', controls: ['7.1'] },
+    ],
   },
 
   'internal-service-isolation': {
@@ -1807,6 +2379,11 @@ const POLICY_TEMPLATES = {
     actions: [
       { type: 'deny', message: 'Internal service must not be publicly accessible' },
       { type: 'quarantine', message: 'Service isolated until network configuration corrected' },
+    ],
+    compliance_frameworks: [
+      { framework: 'SOC2', controls: ['CC6.6'] },
+      { framework: 'NIST_800_53', controls: ['SC-7', 'AC-4'] },
+      { framework: 'ISO_27001', controls: ['A.8.3'] },
     ],
   },
 
@@ -1827,6 +2404,12 @@ const POLICY_TEMPLATES = {
       { type: 'flag', message: 'KMS key rotation not enabled' },
       { type: 'notify', message: 'Enable automatic key rotation' },
     ],
+    compliance_frameworks: [
+      { framework: 'SOC2', controls: ['CC6.1'] },
+      { framework: 'NIST_800_53', controls: ['SC-12'] },
+      { framework: 'ISO_27001', controls: ['A.8.24'] },
+      { framework: 'PCI_DSS', controls: ['8.2.4'] },
+    ],
   },
 
   'secret-rotation-required': {
@@ -1841,6 +2424,12 @@ const POLICY_TEMPLATES = {
     actions: [
       { type: 'flag', message: 'Secret has no rotation policy' },
       { type: 'notify', message: 'Configure automatic rotation' },
+    ],
+    compliance_frameworks: [
+      { framework: 'SOC2', controls: ['CC6.1'] },
+      { framework: 'NIST_800_53', controls: ['SC-12', 'IA-5'] },
+      { framework: 'ISO_27001', controls: ['A.8.24', 'A.9.4.3'] },
+      { framework: 'PCI_DSS', controls: ['8.2.4'] },
     ],
   },
 
@@ -1861,6 +2450,12 @@ const POLICY_TEMPLATES = {
       { type: 'flag', message: 'Workload lacks cryptographic attestation' },
       { type: 'notify', message: 'Deploy SPIRE agent for SPIFFE identity provisioning' },
     ],
+    compliance_frameworks: [
+      { framework: 'SOC2', controls: ['CC6.1', 'CC6.3'] },
+      { framework: 'NIST_800_53', controls: ['IA-2', 'IA-5'] },
+      { framework: 'ISO_27001', controls: ['A.8.5', 'A.8.24'] },
+      { framework: 'PCI_DSS', controls: ['8.3'] },
+    ],
   },
 
   // ══════════════════════════════════════════════════════════════════════════
@@ -1880,6 +2475,11 @@ const POLICY_TEMPLATES = {
       { type: 'flag', message: 'Unregistered AI endpoint detected' },
       { type: 'notify', message: 'Register AI endpoint in workload inventory' },
     ],
+    compliance_frameworks: [
+      { framework: 'EU_AI_ACT', controls: ['Art.17'] },
+      { framework: 'SOC2', controls: ['CC7.2'] },
+      { framework: 'NIST_800_53', controls: ['CA-7'] },
+    ],
   },
 
   'ai-vpc-only': {
@@ -1895,6 +2495,11 @@ const POLICY_TEMPLATES = {
       { type: 'flag', message: 'AI API accessed over public internet' },
       { type: 'notify', message: 'Route through VPC endpoint or LLM gateway' },
     ],
+    compliance_frameworks: [
+      { framework: 'SOC2', controls: ['CC6.6'] },
+      { framework: 'NIST_800_53', controls: ['SC-7'] },
+      { framework: 'ISO_27001', controls: ['A.5.15'] },
+    ],
   },
 
   'shadow-ai-detection': {
@@ -1908,6 +2513,11 @@ const POLICY_TEMPLATES = {
     actions: [
       { type: 'flag', message: 'Shadow AI usage detected — undeclared AI API calls' },
       { type: 'quarantine', message: 'Workload quarantined pending AI usage review' },
+    ],
+    compliance_frameworks: [
+      { framework: 'EU_AI_ACT', controls: ['Art.17', 'Art.72'] },
+      { framework: 'SOC2', controls: ['CC7.1'] },
+      { framework: 'NIST_800_53', controls: ['SI-4'] },
     ],
   },
 
@@ -1924,6 +2534,11 @@ const POLICY_TEMPLATES = {
       { type: 'deny', message: 'Direct AI API calls must go through LLM gateway' },
       { type: 'flag', message: 'Route AI calls through gateway for audit and DLP' },
     ],
+    compliance_frameworks: [
+      { framework: 'EU_AI_ACT', controls: ['Art.9'] },
+      { framework: 'SOC2', controls: ['CC6.6'] },
+      { framework: 'NIST_800_53', controls: ['SC-7'] },
+    ],
   },
 
   'ai-permission-audit': {
@@ -1937,6 +2552,11 @@ const POLICY_TEMPLATES = {
     ],
     actions: [
       { type: 'flag', message: 'AI permissions granted without registered AI workload' },
+    ],
+    compliance_frameworks: [
+      { framework: 'EU_AI_ACT', controls: ['Art.12'] },
+      { framework: 'SOC2', controls: ['CC7.2'] },
+      { framework: 'NIST_800_53', controls: ['AU-6'] },
     ],
   },
 
@@ -1953,6 +2573,10 @@ const POLICY_TEMPLATES = {
       { type: 'flag', message: 'AI permissions unused for 90+ days' },
       { type: 'notify', message: 'Revoke unused AI permissions' },
     ],
+    compliance_frameworks: [
+      { framework: 'EU_AI_ACT', controls: ['Art.12'] },
+      { framework: 'NIST_800_53', controls: ['AC-6'] },
+    ],
   },
 
   'public-ai-endpoint-lockdown': {
@@ -1968,6 +2592,11 @@ const POLICY_TEMPLATES = {
       { type: 'deny', message: 'Unprotected public AI endpoint is prohibited' },
       { type: 'quarantine', message: 'AI endpoint locked down pending security review' },
     ],
+    compliance_frameworks: [
+      { framework: 'EU_AI_ACT', controls: ['Art.15'] },
+      { framework: 'SOC2', controls: ['CC6.6'] },
+      { framework: 'NIST_800_53', controls: ['SC-7'] },
+    ],
   },
 
   'ai-endpoint-auth': {
@@ -1981,6 +2610,11 @@ const POLICY_TEMPLATES = {
     ],
     actions: [
       { type: 'deny', message: 'AI endpoint without authentication is prohibited' },
+    ],
+    compliance_frameworks: [
+      { framework: 'SOC2', controls: ['CC6.1'] },
+      { framework: 'NIST_800_53', controls: ['IA-2'] },
+      { framework: 'ISO_27001', controls: ['A.8.5'] },
     ],
   },
 
@@ -1999,6 +2633,11 @@ const POLICY_TEMPLATES = {
     actions: [
       { type: 'deny', message: 'Delegation chain contains unauthorized hop — access denied (anti-confused-deputy)' },
     ],
+    compliance_frameworks: [
+      { framework: 'EU_AI_ACT', controls: ['Art.12'] },
+      { framework: 'SOC2', controls: ['CC7.2', 'CC6.3'] },
+      { framework: 'NIST_800_53', controls: ['AU-3', 'AC-3'] },
+    ],
   },
 
   'chain-max-depth': {
@@ -2012,6 +2651,11 @@ const POLICY_TEMPLATES = {
     actions: [
       { type: 'deny', message: 'Delegation chain exceeds max depth of 3 hops — too many intermediaries' },
     ],
+    compliance_frameworks: [
+      { framework: 'EU_AI_ACT', controls: ['Art.12'] },
+      { framework: 'SOC2', controls: ['CC7.2'] },
+      { framework: 'NIST_800_53', controls: ['AC-6'] },
+    ],
   },
 
   'chain-require-origin': {
@@ -2024,6 +2668,11 @@ const POLICY_TEMPLATES = {
     ],
     actions: [
       { type: 'deny', message: 'Chain origin unknown — cannot verify delegation authority' },
+    ],
+    compliance_frameworks: [
+      { framework: 'EU_AI_ACT', controls: ['Art.12', 'Art.14'] },
+      { framework: 'SOC2', controls: ['CC7.2'] },
+      { framework: 'NIST_800_53', controls: ['AU-3'] },
     ],
   },
 };

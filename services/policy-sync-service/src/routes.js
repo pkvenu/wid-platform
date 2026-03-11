@@ -2122,6 +2122,211 @@ function mountPolicyRoutes(app, dbClient, opts = {}) {
     } catch (e) { res.status(502).json({ error: 'Proxy error', detail: e.message }); }
   });
 
+  // =============================================================================
+  // Compliance Framework Endpoints
+  // =============================================================================
+
+  const { COMPLIANCE_FRAMEWORKS } = require('./engine/compliance-frameworks');
+
+  // GET /api/v1/compliance/frameworks — list all frameworks with coverage stats
+  app.get('/api/v1/compliance/frameworks', async (req, res) => {
+    try {
+      // Ensure compliance_frameworks column exists
+      try { await dbClient.query('ALTER TABLE policy_templates ADD COLUMN IF NOT EXISTS compliance_frameworks JSONB DEFAULT \'[]\''); } catch (e) { /* ignore */ }
+
+      const frameworks = [];
+      for (const [fwId, fw] of Object.entries(COMPLIANCE_FRAMEWORKS)) {
+        const totalControls = Object.keys(fw.controls).length;
+
+        // Count templates mapped to this framework
+        const tplResult = await dbClient.query(
+          `SELECT COUNT(*) as cnt FROM policy_templates
+           WHERE compliance_frameworks @> $1::jsonb`,
+          [JSON.stringify([{ framework: fwId }])]
+        );
+        const mappedTemplates = parseInt(tplResult.rows[0].cnt) || 0;
+
+        // Count deployed policies from these templates
+        const deployedResult = await dbClient.query(
+          `SELECT COUNT(DISTINCT p.id) as cnt FROM policies p
+           JOIN policy_templates pt ON p.template_id = pt.id
+           WHERE pt.compliance_frameworks @> $1::jsonb
+             AND p.enabled = true`,
+          [JSON.stringify([{ framework: fwId }])]
+        );
+        const deployedPolicies = parseInt(deployedResult.rows[0].cnt) || 0;
+
+        const coveragePct = mappedTemplates > 0 ? Math.round((deployedPolicies / mappedTemplates) * 100) : 0;
+
+        frameworks.push({
+          id: fwId,
+          name: fw.name,
+          description: fw.description,
+          icon: fw.icon,
+          total_controls: totalControls,
+          mapped_templates: mappedTemplates,
+          deployed_policies: deployedPolicies,
+          coverage_pct: Math.min(coveragePct, 100),
+        });
+      }
+      res.json({ frameworks });
+    } catch (e) {
+      res.status(500).json({ error: e.message });
+    }
+  });
+
+  // GET /api/v1/compliance/frameworks/:id — framework detail with all mapped templates
+  app.get('/api/v1/compliance/frameworks/:id', async (req, res) => {
+    try {
+      const fwId = req.params.id;
+      const fw = COMPLIANCE_FRAMEWORKS[fwId];
+      if (!fw) return res.status(404).json({ error: `Framework ${fwId} not found` });
+
+      // Get all templates mapped to this framework
+      const tplResult = await dbClient.query(
+        `SELECT pt.*,
+          EXISTS(SELECT 1 FROM policies p WHERE p.template_id = pt.id AND p.enabled = true) as deployed,
+          (SELECT p.enforcement_mode FROM policies p WHERE p.template_id = pt.id AND p.enabled = true LIMIT 1) as active_enforcement_mode
+         FROM policy_templates pt
+         WHERE pt.compliance_frameworks @> $1::jsonb
+         ORDER BY pt.severity DESC, pt.name`,
+        [JSON.stringify([{ framework: fwId }])]
+      );
+
+      const templates = tplResult.rows.map(t => {
+        const cfEntry = (typeof t.compliance_frameworks === 'string'
+          ? JSON.parse(t.compliance_frameworks)
+          : (t.compliance_frameworks || [])
+        ).find(cf => cf.framework === fwId);
+        return {
+          id: t.id,
+          name: t.name,
+          description: t.description,
+          policy_type: t.policy_type,
+          severity: t.severity,
+          deployed: t.deployed,
+          enforcement_mode: t.active_enforcement_mode || null,
+          controls: cfEntry?.controls || [],
+        };
+      });
+
+      res.json({
+        framework: { id: fwId, name: fw.name, description: fw.description, icon: fw.icon, controls: fw.controls },
+        templates,
+        total: templates.length,
+        deployed: templates.filter(t => t.deployed).length,
+        coverage_pct: templates.length > 0 ? Math.round((templates.filter(t => t.deployed).length / templates.length) * 100) : 0,
+      });
+    } catch (e) {
+      res.status(500).json({ error: e.message });
+    }
+  });
+
+  // POST /api/v1/compliance/frameworks/:id/deploy — deploy all undeployed templates for a framework
+  app.post('/api/v1/compliance/frameworks/:id/deploy', async (req, res) => {
+    try {
+      const fwId = req.params.id;
+      const fw = COMPLIANCE_FRAMEWORKS[fwId];
+      if (!fw) return res.status(404).json({ error: `Framework ${fwId} not found` });
+
+      // Get undeployed templates for this framework
+      const tplResult = await dbClient.query(
+        `SELECT pt.* FROM policy_templates pt
+         WHERE pt.compliance_frameworks @> $1::jsonb
+           AND NOT EXISTS(SELECT 1 FROM policies p WHERE p.template_id = pt.id AND p.enabled = true)
+         ORDER BY pt.name`,
+        [JSON.stringify([{ framework: fwId }])]
+      );
+
+      let deployed = 0, skipped = 0;
+      const errors = [];
+
+      for (const tpl of tplResult.rows) {
+        try {
+          const conditions = typeof tpl.conditions === 'string' ? JSON.parse(tpl.conditions) : (tpl.conditions || []);
+          const actions = typeof tpl.actions === 'string' ? JSON.parse(tpl.actions) : (tpl.actions || []);
+
+          await dbClient.query(
+            `INSERT INTO policies (name, description, policy_type, severity, conditions, actions,
+             enforcement_mode, enabled, template_id, template_version, scope_environment, effect, created_by)
+             VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)`,
+            [
+              tpl.name, tpl.description, tpl.policy_type, tpl.severity,
+              JSON.stringify(conditions), JSON.stringify(actions),
+              'audit', true, tpl.id, tpl.version,
+              tpl.scope_environment || null, tpl.effect || null, 'compliance-deploy'
+            ]
+          );
+          deployed++;
+        } catch (e) {
+          errors.push(`${tpl.id}: ${e.message}`);
+        }
+      }
+
+      skipped = (await dbClient.query(
+        `SELECT COUNT(*) as cnt FROM policy_templates pt
+         WHERE pt.compliance_frameworks @> $1::jsonb
+           AND EXISTS(SELECT 1 FROM policies p WHERE p.template_id = pt.id AND p.enabled = true)`,
+        [JSON.stringify([{ framework: fwId }])]
+      )).rows[0].cnt;
+
+      res.json({ deployed, skipped: parseInt(skipped), errors, framework: fwId });
+    } catch (e) {
+      res.status(500).json({ error: e.message });
+    }
+  });
+
+  // GET /api/v1/compliance/frameworks/:id/coverage — coverage breakdown by control
+  app.get('/api/v1/compliance/frameworks/:id/coverage', async (req, res) => {
+    try {
+      const fwId = req.params.id;
+      const fw = COMPLIANCE_FRAMEWORKS[fwId];
+      if (!fw) return res.status(404).json({ error: `Framework ${fwId} not found` });
+
+      // Get all templates with their deploy status
+      const tplResult = await dbClient.query(
+        `SELECT pt.id, pt.name, pt.compliance_frameworks,
+          EXISTS(SELECT 1 FROM policies p WHERE p.template_id = pt.id AND p.enabled = true) as deployed
+         FROM policy_templates pt
+         WHERE pt.compliance_frameworks @> $1::jsonb`,
+        [JSON.stringify([{ framework: fwId }])]
+      );
+
+      const byControl = {};
+      for (const controlId of Object.keys(fw.controls)) {
+        byControl[controlId] = { name: fw.controls[controlId], total: 0, deployed: 0, templates: [] };
+      }
+
+      for (const tpl of tplResult.rows) {
+        const cfArray = typeof tpl.compliance_frameworks === 'string'
+          ? JSON.parse(tpl.compliance_frameworks)
+          : (tpl.compliance_frameworks || []);
+        const cfEntry = cfArray.find(cf => cf.framework === fwId);
+        if (!cfEntry) continue;
+        for (const ctrl of (cfEntry.controls || [])) {
+          if (byControl[ctrl]) {
+            byControl[ctrl].total++;
+            if (tpl.deployed) byControl[ctrl].deployed++;
+            byControl[ctrl].templates.push({ id: tpl.id, name: tpl.name, deployed: tpl.deployed });
+          }
+        }
+      }
+
+      const total = tplResult.rows.length;
+      const deployedCount = tplResult.rows.filter(t => t.deployed).length;
+
+      res.json({
+        framework: fwId,
+        total,
+        deployed: deployedCount,
+        coverage_pct: total > 0 ? Math.round((deployedCount / total) * 100) : 0,
+        by_control: byControl,
+      });
+    } catch (e) {
+      res.status(500).json({ error: e.message });
+    }
+  });
+
 }
 
 module.exports = { mountPolicyRoutes };
@@ -2204,22 +2409,26 @@ function mountAdminRoutes(app, dbClient) {
 
       // 5. Seed templates
       let seeded = 0;
-      // Ensure tags column exists
+      // Ensure tags + compliance_frameworks columns exist
       try { await dbClient.query('ALTER TABLE policy_templates ADD COLUMN IF NOT EXISTS tags TEXT[] DEFAULT \'{}\''); } catch (e) { /* ignore */ }
+      try { await dbClient.query('ALTER TABLE policy_templates ADD COLUMN IF NOT EXISTS compliance_frameworks JSONB DEFAULT \'[]\''); } catch (e) { /* ignore */ }
+      try { await dbClient.query('CREATE INDEX IF NOT EXISTS idx_policy_templates_compliance ON policy_templates USING GIN (compliance_frameworks)'); } catch (e) { /* ignore */ }
       for (const [id, tpl] of Object.entries(POLICY_TEMPLATES)) {
         try {
           await dbClient.query(`
-            INSERT INTO policy_templates (id, name, description, policy_type, severity, conditions, actions, scope_environment, effect, tags)
-            VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)
+            INSERT INTO policy_templates (id, name, description, policy_type, severity, conditions, actions, scope_environment, effect, tags, compliance_frameworks)
+            VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)
             ON CONFLICT (id) DO UPDATE SET
               name = EXCLUDED.name, description = EXCLUDED.description,
               policy_type = EXCLUDED.policy_type, severity = EXCLUDED.severity,
               conditions = EXCLUDED.conditions, actions = EXCLUDED.actions,
               scope_environment = EXCLUDED.scope_environment, effect = EXCLUDED.effect,
-              tags = EXCLUDED.tags
+              tags = EXCLUDED.tags,
+              compliance_frameworks = EXCLUDED.compliance_frameworks
           `, [id, tpl.name, tpl.description, tpl.policy_type, tpl.severity,
               JSON.stringify(tpl.conditions), JSON.stringify(tpl.actions),
-              tpl.scope_environment || null, tpl.effect || null, tpl.tags || []]);
+              tpl.scope_environment || null, tpl.effect || null, tpl.tags || [],
+              JSON.stringify(tpl.compliance_frameworks || [])]);
           seeded++;
         } catch (e) { results.errors.push(`template ${id}: ${e.message}`); }
       }
