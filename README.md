@@ -39,7 +39,32 @@ WID is an enterprise-grade platform for discovering, attesting, and governing no
 <img src="docs/screenshots/access-events-detail.png" alt="Expanded decision showing enforcement timeline, WID token details, chain visualization, and request payload" width="100%">
 
 ### 7. Deploy Policy Templates
-<img src="docs/screenshots/policy-templates.png" alt="Policy template gallery with 30+ templates across access control, AI agent, credential, and compliance categories" width="100%">
+<img src="docs/screenshots/policy-templates.png" alt="Policy template gallery with 133 templates across access control, AI agent, credential, and compliance categories" width="100%">
+
+---
+
+## Implementation Status
+
+| Capability | Status | Evidence |
+|-----------|--------|----------|
+| Multi-cloud discovery (GCP, AWS, Azure, K8s, Docker) | **Shipped** | 17 scanners, 50+ workloads discovered on live GCP |
+| Identity graph with attack paths | **Shipped** | 24 node types, 48 relationship types, 11 attack path detectors |
+| SPIFFE/SPIRE attestation (4-tier trust) | **Shipped** | Cryptographic, token, attribute, policy tiers |
+| Progressive enforcement (Simulate/Audit/Enforce) | **Shipped** | Full visual flow with graph state changes |
+| Policy engine with templates | **Shipped** | 133 templates, 14 operators, Rego compiler |
+| Chain-aware enforcement (anti-confused-deputy) | **Shipped** | 9 chain condition fields, full trace_id linking |
+| Deterministic decision replay | **Shipped** | Policy version hashing, snapshots, replay endpoint |
+| MCP server integrity scanning | **Shipped** | 23 poisoning patterns, 12 verified server registry |
+| Compliance policy packs | **Shipped** | 5 frameworks (SOC 2, PCI DSS, NIST, ISO, EU AI Act), 68 controls |
+| Hub-spoke federation | **Shipped** | Policy sync (15s), audit forwarding (5s batch), heartbeats |
+| Edge gateway (sidecar PEP) | **Shipped** | No mesh required, ~12-17ms latency |
+| JIT token issuance + OBO chains | **Shipped** | Token chain tracking, TTL shortening per hop |
+| Credential brokering | **Shipped** | Vault provider working, AWS/GCP/Azure pluggable |
+| Audit replay UI + PDF export | **Shipped** | jsPDF reports for auditors |
+| Multi-tenancy | Planned | P2 — RLS, tenant isolation |
+| Enterprise SSO (SAML/OIDC) | Planned | P2 — Okta, Azure AD |
+| SIEM/SOAR integration | Planned | P2 — Splunk, Datadog, webhooks |
+| Agent SDK (Node.js + Python) | Planned | P3 — `@wid/agent-sdk` |
 
 ---
 
@@ -47,13 +72,13 @@ WID is an enterprise-grade platform for discovering, attesting, and governing no
 
 ### 1. Multi-Cloud Discovery
 
-16 pluggable scanners auto-discover workloads across GCP, AWS, Azure, Kubernetes, Docker, Vault, GitHub CI/CD, and on-prem. Each scanner activates when its credentials are configured — no code changes needed.
+17 pluggable scanners auto-discover workloads across GCP, AWS, Azure, Kubernetes, Docker, Vault, GitHub CI/CD, and on-prem. Each scanner activates when its credentials are configured — no code changes needed.
 
 Discovered workloads include: Cloud Run services, Lambda functions, EC2 instances, ECS tasks, Kubernetes pods, Docker containers, service accounts, managed identities, IAM roles, AI agents (A2A/MCP), and external API dependencies.
 
 ### 2. Identity Graph & Attack Path Analysis
 
-WID builds a live force-directed identity graph with 22 node types and 17+ relationship types. Every edge carries provenance — which API discovered it and what it means operationally.
+WID builds a live force-directed identity graph with 24 node types and 48 relationship types. Every edge carries provenance — which API discovered it and what it means operationally.
 
 **Attack path detectors** automatically identify:
 - Shared service account abuse (lateral movement)
@@ -128,12 +153,12 @@ enforce (globally) → roll out to all matching workloads
 |------|-------|-------|-------|-------------|
 | **Simulate** | No change | No change | No change | Shown with `WOULD_BLOCK` |
 | **Audit** | Amber dashed | No change | No change | Still counted |
-| **Enforce** | Gray dashed + severed | Green ring | Jumps up | Severed → 0 |
+| **Enforce** | Gray dashed + severed | Green ring | Jumps up | Severed |
 | **Rollback** | Restored to solid | Revert to original | Drops back | Reappear |
 
 ### 6. Governance & Policy Templates
 
-WID ships with 30+ policy templates across 6 categories:
+WID ships with 133 policy templates across 6 categories:
 
 - **Compliance / Posture** — Block unattested production workloads, flag shadow identities, require owner assignment
 - **Lifecycle** — Quarantine stale credentials (90+ days), force rotation, disable credentials older than 365 days
@@ -148,7 +173,21 @@ POST /api/v1/policies/from-template/credential-vault-migration
   { "enforcement_mode": "simulate", "workload": "billing-agent" }
 ```
 
-### 7. Authorization Event Log & Access Decisions
+### 7. Compliance Policy Packs
+
+Pre-built policy sets mapped to 5 compliance frameworks:
+
+| Framework | Controls | Mapped Templates |
+|-----------|----------|-----------------|
+| SOC 2 Type II | 10 | 124 |
+| NIST 800-53 Rev 5 | 19 | 122 |
+| ISO 27001:2022 | 17 | 71 |
+| PCI DSS v4.0 | 13 | 45 |
+| EU AI Act | 9 | 37 |
+
+One-click deploy: deploy all policies for a framework in audit mode. Coverage dashboard tracks deployed vs. available per control. See [docs/COMPLIANCE.md](docs/COMPLIANCE.md) for full control-to-template mappings.
+
+### 8. Authorization Event Log & Access Decisions
 
 Every policy decision — simulate, audit, or enforce — is persisted with full context:
 
@@ -161,9 +200,11 @@ Every policy decision — simulate, audit, or enforce — is persisted with full
 The Authorization Events page provides:
 - **Live decision stream** with real-time filtering by workload, verdict, policy, and enforcement mode
 - **Trace viewer** — filter by `trace_id` to replay an entire multi-hop agent chain and see which hop was blocked
+- **Audit replay** — reconstruct any decision with the exact policy version that was applied
+- **PDF export** — downloadable compliance reports for auditors
 - **Aggregate stats** — hourly decision rates, top offending workloads, policy hit rates
 
-### 8. AI Agent Chain Tracing
+### 9. AI Agent Chain Tracing
 
 WID traces authorization decisions across multi-hop AI agent chains. When a ServiceNow IT agent calls a code-review agent, which calls OpenAI, which triggers a billing check against Stripe — every hop is traced:
 
@@ -176,7 +217,7 @@ Hop 3: billing-agent → Stripe API                  trace-abc, hop 3/3
 
 All hops share a single `trace_id`. The chain is fully queryable — identify which hop was blocked, which agent escalated privilege, and whether the delegation chain was authorized.
 
-### 9. Deterministic Decision Replay
+### 10. Deterministic Decision Replay
 
 Every authorization decision is logged with enough context to reconstruct it exactly. This enables:
 
@@ -186,12 +227,14 @@ Every authorization decision is logged with enough context to reconstruct it exa
 
 The replay chain links: attestation evidence → WID token → policy evaluation → verdict → enforcement action.
 
-### 10. MCP Server Integrity Scanning
+### 11. MCP Server Integrity Scanning
 
 WID detects Model Context Protocol (MCP) servers in your infrastructure:
 - Discovers MCP endpoints via protocol probing
 - Validates agent-to-server configurations
 - Flags shadow MCP servers (undocumented, no owner)
+- Detects tool poisoning (23 attack patterns across 8 categories)
+- Verifies server integrity against known-good registry (12 verified packages)
 - Enforces tool whitelists (block dangerous tools: shell, exec, delete)
 
 ---
@@ -206,7 +249,7 @@ Hub-and-spoke federated architecture. GCP Cloud Run is the central control plane
                     | policy-engine     :3001  |
                     | token-service     :3000  |
                     | credential-broker :3002  |
-                    | discovery-service :3003  |
+                    | discovery-service :3004  |
                     | relay (hub)       :3005  |
                     | web-ui            :3100  |
                     | Cloud SQL (Postgres 16)  |
@@ -231,6 +274,22 @@ Hub-and-spoke federated architecture. GCP Cloud Run is the central control plane
 - **Deterministic failure semantics** — configurable per-action: fail-open (default), fail-closed, fail-conditional
 - **mTLS between services**, signed policy bundles, tamper-evident audit logs
 
+### Services
+
+| Service | Port | Purpose |
+|---------|------|---------|
+| policy-engine | 3001 | Policy CRUD, evaluation, gateway decisions, template management, compliance |
+| token-service | 3000 | JIT token issuance, validation, OBO chain tracking |
+| credential-broker | 3002 | Multi-provider secret management (Vault, AWS SM, GCP SM) |
+| discovery-service | 3004 (ext) / 3003 (int) | Workload scanning, identity graph, attack paths |
+| relay-service | 3005 | Hub-spoke federation, policy sync, audit forwarding |
+| edge-gateway | 15001/15006/15000 | Data plane PEP — sidecar proxy |
+| ext-authz-adapter | 9191/8080 | Envoy ext_authz alternative |
+| web-ui | 3100 | React SPA dashboard |
+| OPA | 8181 | Open Policy Agent (embedded policy eval) |
+| PostgreSQL | 5432 | State store (single source of truth) |
+| Vault | 8200 | Secrets engine for credential brokering |
+
 ### Data Plane Modes
 
 Two options per environment (choose one):
@@ -248,14 +307,21 @@ Both connect to the local relay, which connects to GCP central.
 
 ```
 wip/
-+-- database/               # Authoritative schema (init.sql v3.0.0)
++-- database/               # Authoritative schema (init.sql)
 +-- deploy/
 |   +-- gcp/terraform/      # GCP Cloud Run + Cloud SQL + LB
 |   +-- aws/terraform/      # AWS EKS + RDS (future spoke)
+|   +-- central/            # Central control plane compose
 |   +-- demo-agents/        # Multi-platform agent deployer
++-- docs/
+|   +-- SPEC.md             # Technical specification
+|   +-- ROADMAP.md          # Prioritized backlog
+|   +-- COMPLIANCE.md       # 5 compliance frameworks, 68 controls
+|   +-- TESTING.md          # Test approach and coverage
+|   +-- DEPLOYMENT.md       # Deployment guide
 +-- services/
 |   +-- policy-sync-service/ # Policy engine + auth decisions (port 3001)
-|   +-- discovery-service/   # Workload scanner + identity graph (port 3003)
+|   +-- discovery-service/   # Workload scanner + identity graph (port 3004)
 |   +-- token-service/       # JIT token issuance + chain tracking (port 3000)
 |   +-- credential-broker/   # Multi-provider secrets (port 3002)
 |   +-- relay-service/       # Hub-spoke federation (port 3005)
@@ -299,6 +365,10 @@ curl http://localhost:8001/health          # agent via gateway
 ### Local Fullstack (standalone, all services)
 
 ```bash
+# 1. (Optional) Set secrets — defaults work for local dev
+cp .env.example .env
+
+# 2. Start all services
 docker compose -f docker-compose.fullstack.yml up --build
 # UI at http://localhost:3100
 ```
@@ -307,7 +377,7 @@ docker compose -f docker-compose.fullstack.yml up --build
 
 ## Scanner Architecture
 
-16 pluggable scanners auto-discovered at startup. Each activates when its credentials are configured:
+17 pluggable scanners auto-discovered at startup. Each activates when its credentials are configured:
 
 | Scanner | Provider | Required Credentials |
 |---------|----------|---------------------|
@@ -321,6 +391,7 @@ docker compose -f docker-compose.fullstack.yml up --build
 | AzureEntraScanner | Azure | `AZURE_TENANT_ID`, `AZURE_CLIENT_ID`, `AZURE_CLIENT_SECRET` |
 | DockerScanner | Docker | Docker daemon running (socket at `/var/run/docker.sock`) |
 | KubernetesScanner | K8s | Kubeconfig or in-cluster service account |
+| ECSScanner | AWS | Same as AWS credentials |
 | CICDScanner | GitHub | `GITHUB_TOKEN`, `GITHUB_ORG` |
 | VaultScanner | Vault | `VAULT_ADDR`, `VAULT_TOKEN` |
 | ServiceTokenScanner | Internal | Token service, certs dir, or SPIRE agent |
@@ -345,8 +416,32 @@ Check scanner status: `GET /api/v1/scanners`
 | `/api/v1/gateway/evaluate-chain` | POST | Multi-hop chain evaluation |
 | `/api/v1/access/decisions/live` | GET | Live authorization decision stream |
 | `/api/v1/access/decisions/traces/:traceId` | GET | Full trace chain replay |
+| `/api/v1/access/decisions/replay/:traceId` | GET | Deterministic decision replay with policy snapshots |
 | `/api/v1/access/decisions/stats` | GET | Aggregate decision stats |
+| `/api/v1/compliance/frameworks` | GET | Compliance frameworks with coverage stats |
+| `/api/v1/compliance/frameworks/:id/deploy` | POST | One-click deploy all framework templates |
 | `/api/v1/relay/environments` | GET | Federation status |
+
+---
+
+## Test Coverage
+
+| Service | Tests | Status |
+|---------|-------|--------|
+| policy-sync-service | 120+ | Policy evaluation, template engine, Rego compiler |
+| edge-gateway | 4 | Gateway proxy, policy enforcement |
+| ext-authz-adapter | 1 | gRPC adapter (1 failing) |
+| relay-service | 2 | Hub/spoke registration, policy sync |
+| discovery-service | — | Integration-tested via scan + graph endpoints |
+| token-service | — | Integration-tested via attestation flow |
+| credential-broker | — | Integration-tested via Vault provider |
+
+```bash
+# Run all tests
+cd services/policy-sync-service && npm test
+cd services/edge-gateway && npm test
+cd services/relay-service && npm test
+```
 
 ---
 
@@ -382,6 +477,7 @@ For scoring algorithms, policy enforcement logic, relationship generation, and a
 - Tamper-evident audit logs with deterministic replay
 - Continuous re-attestation with automatic token rotation
 - Zero-trust default: unregistered workloads are denied, invalid tokens rejected
+- Compose files use `${VAR:-default}` for all secrets — override via `.env` for production
 
 ---
 

@@ -11,7 +11,7 @@ services:
     environment:
       POSTGRES_DB: workload_identity
       POSTGRES_USER: wip_user
-      POSTGRES_PASSWORD: wip_password
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-wip_password}
     ports:
       - "5432:5432"
     volumes:
@@ -49,7 +49,7 @@ services:
     ports:
       - "8200:8200"
     environment:
-      VAULT_DEV_ROOT_TOKEN_ID: root-token
+      VAULT_DEV_ROOT_TOKEN_ID: ${VAULT_DEV_ROOT_TOKEN:-root-token}
       VAULT_DEV_LISTEN_ADDRESS: 0.0.0.0:8200
       VAULT_ADDR: http://127.0.0.1:8200
     cap_add:
@@ -72,7 +72,7 @@ services:
       - "3001:3001"
     environment:
       PORT: 3001
-      DATABASE_URL: postgresql://wip_user:wip_password@postgres:5432/workload_identity
+      DATABASE_URL: postgresql://wip_user:${POSTGRES_PASSWORD:-wip_password}@postgres:5432/workload_identity
       OPA_URL: http://opa:8181
       WEBHOOK_SECRET: ${WEBHOOK_SECRET}
       SYNC_METHOD: ${SYNC_METHOD:-hybrid}
@@ -98,8 +98,8 @@ services:
     environment:
       PORT: 3000
       OPA_URL: http://opa:8181
-      JWT_SECRET: dev-secret-change-in-production
-      DATABASE_URL: postgresql://wip_user:wip_password@postgres:5432/workload_identity
+      JWT_SECRET: ${JWT_SECRET:-dev-secret-change-in-production}
+      DATABASE_URL: postgresql://wip_user:${POSTGRES_PASSWORD:-wip_password}@postgres:5432/workload_identity
     depends_on:
       postgres:
         condition: service_healthy
@@ -122,8 +122,8 @@ services:
       PORT: 3002
       OPA_URL: http://opa:8181
       VAULT_ADDR: http://vault:8200
-      VAULT_TOKEN: root-token
-      DATABASE_URL: postgresql://wip_user:wip_password@postgres:5432/workload_identity
+      VAULT_TOKEN: ${VAULT_DEV_ROOT_TOKEN:-root-token}
+      DATABASE_URL: postgresql://wip_user:${POSTGRES_PASSWORD:-wip_password}@postgres:5432/workload_identity
     depends_on:
       postgres:
         condition: service_healthy
@@ -146,7 +146,7 @@ services:
       - "3003:3003"
     environment:
       PORT: 3003
-      DATABASE_URL: postgresql://wip_user:wip_password@postgres:5432/workload_identity
+      DATABASE_URL: postgresql://wip_user:${POSTGRES_PASSWORD:-wip_password}@postgres:5432/workload_identity
     depends_on:
       postgres:
         condition: service_healthy
@@ -165,14 +165,14 @@ services:
       - "3004:3003"
     environment:
       PORT: 3003
-      DATABASE_URL: postgresql://wip_user:wip_password@postgres:5432/workload_identity
+      DATABASE_URL: postgresql://wip_user:${POSTGRES_PASSWORD:-wip_password}@postgres:5432/workload_identity
       DISCOVERY_INTERVAL: 300000
       PROTOCOL_ACTIVE_PROBE: "true"
       SPIRE_TRUST_DOMAIN: company.com
       AWS_ACCESS_KEY_ID: ${AWS_ACCESS_KEY_ID}
       AWS_SECRET_ACCESS_KEY: ${AWS_SECRET_ACCESS_KEY}
       AWS_DEFAULT_REGION: us-east-1
-      VAULT_TOKEN: root-token
+      VAULT_TOKEN: ${VAULT_DEV_ROOT_TOKEN:-root-token}
       VAULT_ADDR: http://vault:8200
       TOKEN_SERVICE_URL: http://token-service:3000
       GATEWAY_PROXY_URL: http://relay-service:3005/gateway/proxy

@@ -49,7 +49,7 @@ Both modes use shared `@wid/core` (CircuitBreaker, PolicyCache, CredBuffer, Audi
 
 **Key subsystems:**
 - **Policy evaluator** (`engine/evaluator.js`): In-memory policy evaluation with 14 operators (equals, not_equals, contains, starts_with, ends_with, in, not_in, matches, gt, gte, lt, lte, is_true, is_false, exists, not_exists). First-deny-wins, first-allow-wins short-circuit.
-- **Template engine** (`engine/templates.js`): Seeded policy templates mapped to finding types via `finding_remediation_map` table. Templates cover: JIT credentials, static credential bans, A2A auth requirements, agent scope ceilings, MCP tool whitelists.
+- **Template engine** (`engine/templates.js`): 133 seeded policy templates mapped to finding types via `finding_remediation_map` table and to 5 compliance frameworks (SOC 2, PCI DSS, NIST 800-53, ISO 27001, EU AI Act). Templates cover: JIT credentials, static credential bans, A2A auth requirements, agent scope ceilings, MCP tool whitelists, chain integrity, compliance posture.
 - **Rego compiler** (`compilers/rego.js`): Translates policy conditions into OPA-compatible Rego. Produces `workload.rego` bundles.
 - **Gateway evaluate** (`routes.js:1282+`): The hot-path endpoint called by edge gateways and demo agents. Evaluates all matching policies, returns verdict (allow/deny), logs to `ext_authz_decisions`.
 - **Auth routes** (`auth/auth-routes.js`): User registration, login (cookie-based JWT), logout, password reset, demo-reset.
@@ -76,7 +76,7 @@ Both modes use shared `@wid/core` (CircuitBreaker, PolicyCache, CredBuffer, Audi
 
 ### 2.2 Discovery Service (`services/discovery-service/`)
 
-**Port**: 3003 (internal), 3004 (external) | **Role**: Workload scanning, identity graph, attack paths
+**Port**: 3003 (internal container port), 3004 (external/host mapped) | **Role**: Workload scanning, identity graph, attack paths
 
 **Key subsystems:**
 - **Cloud scanners** (`scanners/`): GCP (Cloud Run, IAM, firewall, SA, Vertex AI), AWS (IAM, EC2, Lambda, S3, RDS, VPC), Azure (RBAC, managed identity, storage, SQL, NSG), Docker (containers, networks, ports), On-prem (K8s SA, SPIFFE)

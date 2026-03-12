@@ -6,17 +6,13 @@
 # This is the single source of truth for policies, workloads, and audit events.
 #
 # Usage:
+#   cp .env.example .env  # set secrets before first run
 #   docker compose -f docker-compose.central.yml up --build -d
 #
-# Services:
-#   postgres        — State store (policies, workloads, decisions)
-#   vault           — Secrets engine for credential brokering
-#   policy-engine   — NHI governance (34 templates, Rego compiler)
-#   token-service   — JIT token exchange, OBO chain tracking
-#   credential-broker — Vault/AWS/GCP credential provider
-#   discovery-service — NHI auto-discovery (K8s, Docker, AWS, Vault)
-#   relay           — Hub-and-spoke federation (central hub)
-#   web             — Unified dashboard (all environments)
+# Security:
+#   All secrets use ${VAR:-default} substitution. The defaults are for local
+#   development ONLY. For production, create a .env file with strong values
+#   for POSTGRES_PASSWORD, JWT_SECRET, and VAULT_DEV_ROOT_TOKEN.
 #
 # =============================================================================
 
@@ -28,7 +24,7 @@ services:
     environment:
       POSTGRES_DB: workload_identity
       POSTGRES_USER: wid_user
-      POSTGRES_PASSWORD: wid_password
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-wid_password}
     ports:
       - "5432:5432"
     volumes:
@@ -45,7 +41,7 @@ services:
     restart: always
     cap_add: ["IPC_LOCK"]
     environment:
-      VAULT_DEV_ROOT_TOKEN_ID: dev-root-token
+      VAULT_DEV_ROOT_TOKEN_ID: ${VAULT_DEV_ROOT_TOKEN:-dev-root-token}
       VAULT_DEV_LISTEN_ADDRESS: 0.0.0.0:8200
     ports:
       - "8200:8200"
@@ -59,7 +55,7 @@ services:
       - "3001:3001"
     environment:
       PORT: 3001
-      DATABASE_URL: postgresql://wid_user:wid_password@postgres:5432/workload_identity
+      DATABASE_URL: postgresql://wid_user:${POSTGRES_PASSWORD:-wid_password}@postgres:5432/workload_identity
       OPA_COMPILER: "node"
     depends_on:
       postgres:
@@ -73,7 +69,7 @@ services:
       - "3000:3000"
     environment:
       PORT: 3000
-      DATABASE_URL: postgresql://wid_user:wid_password@postgres:5432/workload_identity
+      DATABASE_URL: postgresql://wid_user:${POSTGRES_PASSWORD:-wid_password}@postgres:5432/workload_identity
     depends_on:
       postgres:
         condition: service_healthy
@@ -86,9 +82,9 @@ services:
       - "3002:3002"
     environment:
       PORT: 3002
-      DATABASE_URL: postgresql://wid_user:wid_password@postgres:5432/workload_identity
+      DATABASE_URL: postgresql://wid_user:${POSTGRES_PASSWORD:-wid_password}@postgres:5432/workload_identity
       VAULT_ADDR: http://vault:8200
-      VAULT_TOKEN: dev-root-token
+      VAULT_TOKEN: ${VAULT_DEV_ROOT_TOKEN:-dev-root-token}
     depends_on:
       postgres:
         condition: service_healthy
@@ -101,9 +97,9 @@ services:
       - "3004:3003"
     environment:
       PORT: 3003
-      DATABASE_URL: postgresql://wid_user:wid_password@postgres:5432/workload_identity
+      DATABASE_URL: postgresql://wid_user:${POSTGRES_PASSWORD:-wid_password}@postgres:5432/workload_identity
       SPIRE_TRUST_DOMAIN: company.com
-      VAULT_TOKEN: dev-root-token
+      VAULT_TOKEN: ${VAULT_DEV_ROOT_TOKEN:-dev-root-token}
       VAULT_ADDR: http://vault:8200
       TOKEN_SERVICE_URL: http://token-service:3000
     volumes:
