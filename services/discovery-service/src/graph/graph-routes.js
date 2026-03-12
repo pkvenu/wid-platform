@@ -104,6 +104,9 @@ function mountGraphRoutes(app, dbClient) {
             const relevantTemplateIds = findingMap[ft] || [];
             const matchedPolicies = deployedPolicies.filter(p => {
               if (!relevantTemplateIds.includes(p.template_id)) return false;
+              // Skip globally-scoped policies — they enforce on the gateway but
+              // shouldn't clutter the graph (e.g. compliance pack deploys)
+              if (!p.client_workload_id && !p.attack_path_id) return false;
               // Scoped to a specific attack path — must match this path's id
               if (p.attack_path_id && p.attack_path_id !== ap.id) return false;
               // Scoped to a specific workload — must match this path's workload
@@ -111,7 +114,7 @@ function mountGraphRoutes(app, dbClient) {
                 const apWorkloadId = workloadNameToId[(ap.workload || '').toLowerCase()];
                 if (!apWorkloadId || p.client_workload_id !== apWorkloadId) return false;
               }
-              return true; // Global policies (no scope) match all paths of this finding_type
+              return true;
             });
 
             if (matchedPolicies.length > 0) {
