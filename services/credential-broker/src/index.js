@@ -20,7 +20,7 @@ app.use(express.json());
 const PORT = process.env.PORT || 3002;
 const OPA_URL = process.env.OPA_URL || 'http://opa:8181';
 const DATABASE_URL = process.env.DATABASE_URL || 'postgresql://wip_user:wip_password@postgres:5432/workload_identity';
-const JWT_SECRET = process.env.JWT_SECRET || 'demo-secret-key';
+const TOKEN_SERVICE_URL = process.env.TOKEN_SERVICE_URL || 'http://token-service:3000';
 
 let dbClient = null;
 
@@ -123,11 +123,30 @@ app.all('/v1/proxy/:target/*', async (req, res) => {
     let workloadId, actor;
 
     try {
-      const decoded = jwt.verify(token, JWT_SECRET);
+      // Decode token to extract jti, then validate via token-service
+      const decoded = jwt.decode(token);
+      if (!decoded || !decoded.jti) {
+        return res.status(401).json({ error: 'invalid_token', reason: 'Missing jti claim' });
+      }
+
+      const validateResponse = await axios.post(
+        `${TOKEN_SERVICE_URL}/v1/token/validate`,
+        { token_jti: decoded.jti },
+        { timeout: 5000 }
+      );
+
+      if (!validateResponse.data.valid) {
+        return res.status(401).json({
+          error: 'invalid_token',
+          reason: validateResponse.data.reason || 'Token validation failed',
+        });
+      }
+
       workloadId = decoded.sub;
       actor = decoded.act?.sub || decoded.sub;
       console.log(`  Workload: ${workloadId}, Actor: ${actor}`);
     } catch (error) {
+      console.error(`  Token validation error:`, error.message);
       return res.status(401).json({ error: 'invalid_token' });
     }
 

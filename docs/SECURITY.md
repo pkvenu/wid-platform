@@ -22,7 +22,7 @@
 | Secret | Dev Default | File:Line | Production Override |
 |--------|------------|-----------|-------------------|
 | `POSTGRES_PASSWORD` | `wip_password` | `docker-compose.fullstack.yml:14` | Set in `.env` — 32+ random chars |
-| `JWT_SECRET` | `dev-secret-change-in-production` | `services/token-service/src/index.js:18` | Set `JWT_SECRET` env var — 64+ random chars |
+| `JWT_PRIVATE_KEY` / `JWT_PRIVATE_KEY_FILE` | Dev EC keys in `services/token-service/keys/dev/` | `services/token-service/src/crypto.js` | Set `JWT_PRIVATE_KEY` (base64 PEM) or `JWT_PRIVATE_KEY_FILE` (path) |
 | `VAULT_DEV_ROOT_TOKEN` | `dev-root-token` | `docker-compose.fullstack.yml` (vault service) | Vault HA mode with proper unseal keys |
 | `CENTRAL_API_KEY` | empty | `services/relay-service/src/index.js:58` | Set `CENTRAL_API_KEY` env var |
 | `ADMIN_PASSWORD` | `Admin12345` | `database/init.sql` | Change via API after first boot |
@@ -34,7 +34,7 @@ All dev defaults use `${VAR:-default}` substitution pattern. Setting the env var
 ## Production Hardening Checklist
 
 - [ ] Generate random `POSTGRES_PASSWORD` (32+ chars, alphanumeric)
-- [ ] Generate random `JWT_SECRET` (64+ chars)
+- [ ] Generate production ES256 keys (`node services/token-service/scripts/generate-keys.js /path/to/prod/keys`)
 - [ ] Vault HA mode (not `dev` server mode)
 - [ ] PostgreSQL SSL/TLS enabled
 - [ ] mTLS between all services (edge-gateway ↔ relay ↔ control plane)
@@ -65,7 +65,7 @@ All dev defaults use `${VAR:-default}` substitution pattern. Setting the env var
 
 | Threat | Mitigation | Status |
 |--------|-----------|--------|
-| Token forgery | JWT signed with HS256 (dev) / RS256 (prod) | Dev: HS256, Prod: RS256 planned |
+| Token forgery | Workload tokens signed with ES256 (ECDSA P-256). Asymmetric: only token-service holds private key. JWKS endpoint for public key distribution. | Shipped |
 | Policy bypass | OPA default-deny base policy | Shipped |
 | Credential leak via gateway | JIT injection — gateway never exposes raw keys to callers | Shipped |
 | Confused deputy (agent chains) | Chain-aware enforcement with `trace_id` + `hop_index` validation | Shipped |

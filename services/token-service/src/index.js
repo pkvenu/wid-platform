@@ -8,6 +8,7 @@ const { Client } = require('pg');
 const axios = require('axios');
 const jwt = require('jsonwebtoken');
 const { buildNHIContext, ACTIONS, AUTH_METHODS, validateCapability } = require('./canonical-nhi-context');
+const tokenCrypto = require('./crypto');
 
 const app = express();
 app.use(express.json());
@@ -15,11 +16,6 @@ app.use(express.json());
 const PORT = process.env.PORT || 3000;
 const DATABASE_URL = process.env.DATABASE_URL || 'postgresql://wip_user:wip_password@postgres:5432/workload_identity';
 const OPA_URL = process.env.OPA_URL || 'http://opa:8181';
-const JWT_SECRET = process.env.JWT_SECRET || 'dev-secret-change-in-production';
-
-if (JWT_SECRET === 'dev-secret-change-in-production') {
-  console.warn('WARNING: Using default JWT_SECRET. Set JWT_SECRET env var for production.');
-}
 
 let dbClient = null;
 
@@ -421,9 +417,7 @@ async function issueToken({ subject, audience, capability, scopes, workload, par
     request_id
   };
 
-  const token = jwt.sign(payload, JWT_SECRET, {
-    algorithm: 'HS256'
-  });
+  const token = tokenCrypto.signToken(payload);
 
   // Record in token_chain table for OBO tracking
   try {
@@ -538,11 +532,7 @@ function extractSpiffeIdFromCert(cert) {
 }
 
 async function verifyJWT(token) {
-  try {
-    return jwt.verify(token, JWT_SECRET);
-  } catch {
-    return null;
-  }
+  return tokenCrypto.verifyToken(token);
 }
 
 // =============================================================================
@@ -648,10 +638,38 @@ app.post('/v1/tokens/revoke', async (req, res) => {
   }
 });
 
+// =============================================================================
+// JWKS + OIDC Discovery Endpoints
+// =============================================================================
+
+app.get('/.well-known/jwks.json', (req, res) => {
+  const jwks = tokenCrypto.getJWKS();
+  if (!jwks) {
+    return res.status(404).json({ error: 'JWKS not available (HS256 mode)' });
+  }
+  res.setHeader('Cache-Control', 'public, max-age=3600');
+  res.json(jwks);
+});
+
+app.get('/.well-known/openid-configuration', (req, res) => {
+  const baseUrl = process.env.TOKEN_SERVICE_BASE_URL || `http://localhost:${PORT}`;
+  res.json({
+    issuer: 'workload-identity-platform',
+    jwks_uri: `${baseUrl}/.well-known/jwks.json`,
+    token_endpoint: `${baseUrl}/v1/token/exchange`,
+    token_validation_endpoint: `${baseUrl}/v1/token/validate`,
+    id_token_signing_alg_values_supported: [tokenCrypto.getAlgorithm()],
+    response_types_supported: ['token'],
+    subject_types_supported: ['public'],
+  });
+});
+
 // Health check
 app.get('/health', (req, res) => {
   res.json({
     status: 'healthy',
+    algorithm: tokenCrypto.getAlgorithm(),
+    kid: tokenCrypto.getKid(),
     timestamp: new Date().toISOString()
   });
 });

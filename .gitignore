@@ -28,6 +28,7 @@ tfplan
 
 # ── Credential & Key Files ──
 *.pem
+!services/token-service/keys/dev/*.pem
 *.p12
 *.pfx
 *.jks
@@ -35,6 +36,9 @@ tfplan
 service-account*.json
 .git-credentials
 .netrc
+
+# ── Token Service Production Keys (NEVER commit) ──
+services/token-service/keys/prod/
 
 # ── Build Outputs ──
 dist/

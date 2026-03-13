@@ -80,6 +80,7 @@ When asked for design or implementation, respond with:
 | ADR-07 | Trace IDs across agent chains | Full decision chain queryable and replayable in audit |
 | ADR-08 | Vault for credential brokering | Pluggable providers: vault, aws, gcp, azure, 1password |
 | ADR-09 | Remediation Decision Framework | 6-category taxonomy, decision routing, approval tiers |
+| ADR-10 | ES256 for workload tokens | Asymmetric signing (ECDSA P-256). Only token-service holds private key. JWKS for verification. HS256 fallback during migration. |
 
 ---
 

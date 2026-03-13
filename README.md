@@ -113,7 +113,7 @@ The attestation engine tries the highest tier first and falls back gracefully. T
 
 ### 4. JIT WID Tokens
 
-On successful attestation, WID issues short-lived SPIFFE-bound tokens:
+On successful attestation, WID issues short-lived SPIFFE-bound tokens signed with **ES256 (ECDSA P-256)**. Asymmetric signing means only the token-service holds the private key — any service can verify tokens via the `/.well-known/jwks.json` endpoint without sharing secrets.
 
 ```json
 {
