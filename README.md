@@ -55,13 +55,13 @@ See [docs/STATUS.md](docs/STATUS.md) for verified evidence behind each claim, wi
 | Capability | Status | Evidence |
 |-----------|--------|----------|
 | Multi-cloud discovery (GCP, AWS, Azure, K8s, Docker) | **Shipped** | 17 scanners, 50+ workloads discovered on live GCP |
-| Identity graph with attack paths | **Shipped** | 24 node types, 48 relationship types, 11 attack path detectors |
+| Identity graph with attack paths | **Shipped** | 57 node types across 14 graph groups, 48 relationship types, 11 attack path detectors |
 | SPIFFE/SPIRE attestation (4-tier trust) | **Shipped** | Cryptographic, token, attribute, policy tiers |
 | Progressive enforcement (Simulate/Audit/Enforce) | **Shipped** | Full visual flow with graph state changes |
 | Policy engine with templates | **Shipped** | 133 templates, 14 operators, Rego compiler |
 | Chain-aware enforcement (anti-confused-deputy) | **Shipped** | 9 chain condition fields, full trace_id linking |
 | Deterministic decision replay | **Shipped** | Policy version hashing, snapshots, replay endpoint |
-| MCP server integrity scanning | **Shipped** | 23 poisoning patterns, 12 verified server registry |
+| MCP server integrity scanning | **Shipped** | 22 poisoning patterns, 12 verified server registry |
 | Compliance policy packs | **Shipped** | 5 frameworks (SOC 2, PCI DSS, NIST, ISO, EU AI Act), 68 controls |
 | Hub-spoke federation | **Shipped** | Policy sync (15s), audit forwarding (5s batch), heartbeats |
 | Edge gateway (sidecar PEP) | **Shipped** | No mesh required, ~12-17ms latency |
@@ -85,7 +85,7 @@ Discovered workloads include: Cloud Run services, Lambda functions, EC2 instance
 
 ### 2. Identity Graph & Attack Path Analysis
 
-WID builds a live force-directed identity graph with 24 node types and 48 relationship types. Every edge carries provenance — which API discovered it and what it means operationally.
+WID builds a live force-directed identity graph with 57 node types across 14 graph groups and 48 relationship types. Every edge carries provenance — which API discovered it and what it means operationally.
 
 **Attack path detectors** automatically identify:
 - Shared service account abuse (lateral movement)
@@ -240,7 +240,7 @@ WID detects Model Context Protocol (MCP) servers in your infrastructure:
 - Discovers MCP endpoints via protocol probing
 - Validates agent-to-server configurations
 - Flags shadow MCP servers (undocumented, no owner)
-- Detects tool poisoning (23 attack patterns across 8 categories)
+- Detects tool poisoning (22 attack patterns across 8 categories)
 - Verifies server integrity against known-good registry (12 verified packages)
 - Enforces tool whitelists (block dangerous tools: shell, exec, delete)
 

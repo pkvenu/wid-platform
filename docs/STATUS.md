@@ -10,7 +10,7 @@
 | Claim | README Says | Verified | Source |
 |-------|------------|----------|--------|
 | Pluggable scanners | 17 | **17** | `services/discovery-service/src/scanners/` — cloud/8, container/3, credentials/4, on-prem/2 |
-| Node types (graph groups) | 24 | **57 in `groupOf()`** | `services/discovery-service/src/graph/relationship-scanner.js:49-89` |
+| Node types (graph groups) | 57 across 14 groups | **57 in `groupOf()`** | `services/discovery-service/src/graph/relationship-scanner.js:49-89` |
 | Node types (DB constraint) | — | **17 workload types** | `database/init.sql:42-46` |
 | Relationship types | 48 | **48** | `services/discovery-service/src/graph/relationship-scanner.js` — unique `type:` literals |
 | Policy templates | 133 | **133** | `services/policy-sync-service/src/engine/templates.js` |
@@ -19,7 +19,7 @@
 | Attestation tiers | 4 | **4** (cryptographic/high/medium/low) | `services/discovery-service/src/utils/security-scorer.js:48-63` |
 | Trust levels | — | **6** (none/low/medium/high/very-high/cryptographic) | `services/discovery-service/src/utils/security-scorer.js:6` |
 | Attack path detectors | 11 | **11 categories** in `computeAttackPaths()` | `services/discovery-service/src/graph/relationship-scanner.js` |
-| MCP poisoning patterns | 23 | **22** | `services/discovery-service/src/graph/protocol-scanner.js:128-158` |
+| MCP poisoning patterns | 22 | **22** | `services/discovery-service/src/graph/protocol-scanner.js:128-158` |
 | MCP known-good registry | 12 | **12** | `services/discovery-service/src/graph/protocol-scanner.js:162-177` |
 
 ---
@@ -63,11 +63,13 @@
 
 ## Table 4 — Discrepancies
 
-| Claim | README | Actual | Resolution |
-|-------|--------|--------|------------|
-| Node types | "24" | 57 in `groupOf()`, 17 in DB constraint | README refers to broad categories; `groupOf()` maps 57 specific types to groups |
-| MCP poisoning patterns | "23" | 22 pattern objects in code | Off-by-one; verify if pattern count grew/shrank since README was written |
-| Attack path detectors | "11" | 11 detection categories in `computeAttackPaths()` | Matches — detectors are inline logic blocks, not separate `_detect` methods |
+All discrepancies resolved as of 2026-03-13:
+
+| Claim | Was | Fix | Status |
+|-------|-----|-----|--------|
+| Node types | README said "24" | Updated to "57 node types across 14 graph groups" | Fixed |
+| MCP poisoning patterns | README said "23" | Updated to "22" (actual count in code) | Fixed |
+| Attack path detectors | "11" | 11 detection categories in `computeAttackPaths()` — correct | No change needed |
 
 ---
 
