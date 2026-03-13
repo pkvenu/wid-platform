@@ -19,6 +19,13 @@ const SEV = {
   info:     { bg: 'bg-blue-500/10', border: 'border-blue-500/20', text: 'text-blue-400' },
 };
 const TICON = { enforcement: '🛡', compliance: '📋', lifecycle: '⏰', access: '🔑', ai_agent: '🤖', conditional_access: '🔐' };
+const COMPLIANCE_COLORS = {
+  SOC2:        { bg: 'bg-indigo-500/10', border: 'border-indigo-500/20', text: 'text-indigo-400', label: 'SOC2' },
+  PCI_DSS:     { bg: 'bg-pink-500/10',   border: 'border-pink-500/20',  text: 'text-pink-400',   label: 'PCI' },
+  NIST_800_53: { bg: 'bg-cyan-500/10',   border: 'border-cyan-500/20',  text: 'text-cyan-400',   label: 'NIST' },
+  ISO_27001:   { bg: 'bg-teal-500/10',   border: 'border-teal-500/20',  text: 'text-teal-400',   label: 'ISO' },
+  EU_AI_ACT:   { bg: 'bg-violet-500/10', border: 'border-violet-500/20',text: 'text-violet-400', label: 'EU AI' },
+};
 
 // ── Field / operator schema ──
 const FIELDS = [
@@ -410,6 +417,32 @@ const TemplateGallery = ({ onUse, onClose }) => {
 };
 
 // ══════════════════════════════════════════════════════════════
+// Compliance Framework Badges
+// ══════════════════════════════════════════════════════════════
+const ComplianceBadges = ({ frameworks }) => {
+  const parsed = typeof frameworks === 'string' ? (() => { try { return JSON.parse(frameworks); } catch { return []; } })() : (frameworks || []);
+  if (!parsed.length) return null;
+  const show = parsed.slice(0, 3);
+  const overflow = parsed.length - 3;
+  return (
+    <div className="flex items-center gap-1">
+      {show.map(cf => {
+        const c = COMPLIANCE_COLORS[cf.framework];
+        if (!c) return null;
+        return (
+          <span key={cf.framework}
+            className={`text-[8px] font-bold uppercase px-1.5 py-0.5 rounded border ${c.bg} ${c.border} ${c.text}`}
+            title={`${cf.framework}: ${(cf.controls || []).join(', ')}`}>
+            {c.label}
+          </span>
+        );
+      })}
+      {overflow > 0 && <span className="text-[8px] text-nhi-faint">+{overflow}</span>}
+    </div>
+  );
+};
+
+// ══════════════════════════════════════════════════════════════
 // Policy Row (List Item)
 // ══════════════════════════════════════════════════════════════
 const PolicyRow = ({ policy, onEdit, onDelete, onToggle, onEval }) => {
@@ -496,6 +529,9 @@ const PolicyRow = ({ policy, onEdit, onDelete, onToggle, onEval }) => {
             Scoped: {policy.name?.match(/\[(.+)\]/)?.[1] || 'workload'}
           </span>
         )}
+
+        {/* Compliance framework badges */}
+        <ComplianceBadges frameworks={policy.compliance_frameworks} />
 
         {/* Violation count */}
         {(policy.open_violations > 0 || (evalRes?.violations > 0)) && (
@@ -676,6 +712,10 @@ const PolicyRow = ({ policy, onEdit, onDelete, onToggle, onEval }) => {
             {policy.last_evaluated && <span>Last eval: {new Date(policy.last_evaluated).toLocaleString()}</span>}
             <span>Evaluated {policy.evaluation_count || 0} times</span>
             {policy.template_id && <span>Template: <span className="font-mono text-nhi-muted">{policy.template_id}</span></span>}
+            {policy.compliance_frameworks && (() => {
+              const cfs = typeof policy.compliance_frameworks === 'string' ? (() => { try { return JSON.parse(policy.compliance_frameworks); } catch { return []; } })() : (policy.compliance_frameworks || []);
+              return cfs.length > 0 ? <span>Frameworks: {cfs.map(cf => COMPLIANCE_COLORS[cf.framework]?.label || cf.framework).join(', ')}</span> : null;
+            })()}
             <span>Created: {new Date(policy.created_at).toLocaleDateString()}</span>
           </div>
         </div>

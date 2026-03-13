@@ -17,11 +17,16 @@
 | `services/policy-sync-service` | `src/tests/policy-engine.test.js` | 22 | All passing | Custom assert |
 | `services/policy-sync-service` | `src/tests/compilers.test.js` | 9 | All passing | Custom assert |
 | `services/ext-authz-adapter` | `test/adapter.test.js` | 1 | **FAILING** | node:test |
-| `services/relay-service` | — | 0 | No tests | — |
-| `services/discovery-service` | — | 0 | No tests | — |
-| `services/token-service` | — | 0 | No tests | — |
-| `services/credential-broker` | — | 0 | No tests | — |
-| **TOTAL** | | **~135** | **~134 pass, 1 fail** | |
+| `services/token-service` | `test/canonical-nhi-context.test.js` | 30 | All passing | node:test |
+| `services/token-service` | `test/token-utils.test.js` | 15 | All passing | node:test |
+| `services/discovery-service` | `test/security-scorer.test.js` | 24 | All passing | node:test |
+| `services/discovery-service` | `test/spiffe.test.js` | 12 | All passing | node:test |
+| `services/discovery-service` | `test/categorizer.test.js` | 22 | All passing | node:test |
+| `services/relay-service` | `test/relay-core.test.js` | 23 | All passing | node:test |
+| `services/credential-broker` | `test/cache.test.js` | 8 | All passing | node:test |
+| `services/credential-broker` | `test/providers.test.js` | 12 | All passing | node:test |
+| `services/credential-broker` | `test/target-config.test.js` | 8 | All passing | node:test |
+| **TOTAL** | | **~289** | **~288 pass, 1 fail** | |
 
 ### What's Covered
 
@@ -32,14 +37,17 @@
 - Edge gateway: config defaults, mode resolution, outbound proxy integration, AI inspection
 - AIInspector: endpoint detection, token estimation, telemetry events
 
+**Newly covered (unit tests):**
+- Token service: NHI context builder, capability validation, trust domain extraction, auth method detection, ID generation
+- Discovery service: Security scoring, trust level determination, finding penalties, SPIFFE ID generation/parsing, workload categorization
+- Relay service: Workload matching, cached policy evaluation, audit buffer, config parsing
+- Credential broker: Cache operations, provider base class, provider manager, target API configs
+
 **Not tested at all:**
-- Discovery service (graph building, relationship scanner, protocol scanner, attack paths)
-- Token service (token issuance, validation, chain tracking)
-- Credential broker (provider integration, rotation lifecycle)
-- Relay service (policy sync, audit forwarding, federation)
 - Web UI (no component tests, no E2E tests)
 - API route handlers (no integration tests against live DB)
 - Database migrations and schema
+- Graph building, relationship scanner, protocol scanner, attack paths (integration tests needed)
 
 ---
 
@@ -196,6 +204,10 @@ describe('MCPIntegrityScanner', () => {
 cd shared/data-plane-core && npm test
 cd services/edge-gateway && npm test
 cd services/policy-sync-service && npm test
+cd services/token-service && npm test
+cd services/discovery-service && npm test
+cd services/relay-service && npm test
+cd services/credential-broker && npm test
 
 # Individual service
 cd services/<service> && npm test
@@ -272,7 +284,7 @@ Before any code change:
 ### Pre-Deploy Checklist
 
 Before deploying to GCP:
-1. All unit tests pass (126+ tests)
+1. All unit tests pass (289+ tests)
 2. Manual smoke test: scan -> graph loads -> select node -> connections display -> enforce -> graph updates
 3. Demo use cases work: `POST /uc1`, `/uc2`, `/uc3`
 4. Edge gateway metrics healthy: `curl localhost:15100/metrics`
@@ -282,8 +294,7 @@ Before deploying to GCP:
 | Issue | Priority | Notes |
 |-------|----------|-------|
 | ext-authz-adapter test failing | P2 | Investigate and fix |
-| No discovery-service tests | P1 | Critical for graph correctness |
-| No token-service tests | P1 | Critical for security |
-| No relay-service tests | P2 | Risk: policy sync bugs |
 | No web UI tests | P3 | Risk: UI regressions |
 | Policy engine tests use custom assert, not node:test | P3 | Migrate for consistency |
+| No integration tests for graph building | P2 | Needs DB + scan pipeline |
+| No integration tests for token chain tracking | P2 | Needs DB + token exchange flow |

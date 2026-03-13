@@ -1,4 +1,11 @@
-# =============================================================================
+# ===========================================================================
+# DEVELOPMENT ONLY — DO NOT USE IN PRODUCTION
+# ===========================================================================
+# Default passwords below are for local development. For production:
+#   1. Create .env with cryptographically random secrets
+#   2. Follow docs/SECURITY.md hardening checklist
+# ===========================================================================
+#
 # WID Platform — Central Control Plane
 # =============================================================================
 #
@@ -8,11 +15,6 @@
 # Usage:
 #   cp .env.example .env  # set secrets before first run
 #   docker compose -f docker-compose.central.yml up --build -d
-#
-# Security:
-#   All secrets use ${VAR:-default} substitution. The defaults are for local
-#   development ONLY. For production, create a .env file with strong values
-#   for POSTGRES_PASSWORD, JWT_SECRET, and VAULT_DEV_ROOT_TOKEN.
 #
 # =============================================================================
 

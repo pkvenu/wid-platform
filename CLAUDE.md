@@ -93,6 +93,8 @@ When asked for design or implementation, respond with:
 | **Architecture** | `shared/ARCHITECTURE.md` | Dual-mode data plane design (edge-gateway vs ext-authz) |
 | **Deep Dive** | `docs/ARCHITECTURE-DEEP-DIVE.md` | Scoring, enforcement, relationship generation |
 | **Compliance** | `docs/COMPLIANCE.md` | 5 compliance frameworks, 68 controls, template mappings |
+| **Status Matrix** | `docs/STATUS.md` | Verified evidence behind every README claim |
+| **Security** | `docs/SECURITY.md` | Security posture, dev/prod boundaries, threat model |
 
 **When starting a new session**: Read `docs/ROADMAP.md` first to understand current priorities.
 

@@ -114,6 +114,26 @@ assert(!evaluator.evaluateCondition({field:'owner',operator:'exists'},w({owner:n
 assert(evaluator.evaluateAll([{id:0,name:'Off',conditions:[{field:'verified',operator:'is_false'}],actions:[],severity:'low',enabled:false,enforcement_mode:'audit'}],w({verified:false})).length===0, 'Disabled → skip');
 assert(evaluator.evaluateAll([{id:0,name:'DM',conditions:[{field:'verified',operator:'is_false'}],actions:[],severity:'low',enabled:true,enforcement_mode:'disabled'}],w({verified:false})).length===0, 'Mode disabled → skip');
 
+console.log('\n═══ COMPLIANCE FRAMEWORKS ═══');
+const VALID_FRAMEWORKS = ['SOC2', 'PCI_DSS', 'NIST_800_53', 'ISO_27001', 'EU_AI_ACT'];
+let templatesWithFrameworks = 0;
+for (const [id, tpl] of Object.entries(POLICY_TEMPLATES)) {
+  const cfs = tpl.compliance_frameworks || [];
+  if (cfs.length > 0) {
+    templatesWithFrameworks++;
+    assert(Array.isArray(cfs), `${id}: compliance_frameworks is array`);
+    cfs.forEach(cf => {
+      assert(typeof cf.framework === 'string' && VALID_FRAMEWORKS.includes(cf.framework), `${id}: framework "${cf.framework}" is valid`);
+      assert(Array.isArray(cf.controls) && cf.controls.length > 0, `${id}: ${cf.framework} has controls`);
+      cf.controls.forEach(ctrl => assert(typeof ctrl === 'string' && ctrl.length > 0, `${id}: control "${ctrl}" is non-empty string`));
+    });
+  }
+}
+assert(templatesWithFrameworks > 0, `At least one template has compliance_frameworks (found ${templatesWithFrameworks})`);
+// Verify key templates have frameworks populated
+assert((POLICY_TEMPLATES['prod-attestation-required'].compliance_frameworks || []).length >= 2, 'prod-attestation-required has 2+ frameworks');
+assert((POLICY_TEMPLATES['no-owner-violation'].compliance_frameworks || []).length >= 2, 'no-owner-violation has 2+ frameworks');
+
 console.log(`\n${'═'.repeat(50)}`);
 console.log(`  Results: ${passed} passed, ${failed} failed`);
 if (failures.length) failures.forEach(f => console.log(`    ✗ ${f}`));

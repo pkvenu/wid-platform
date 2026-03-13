@@ -6,7 +6,7 @@
   "scripts": {
     "start": "node src/index.js",
     "dev": "nodemon src/index.js",
-    "test": "node --test src/**/*.test.js 2>/dev/null || echo 'No unit tests yet — use scripts/smoke-test.sh for integration testing'"
+    "test": "node --test test/*.test.js"
   },
   "keywords": [
     "credential-injection",

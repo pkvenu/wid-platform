@@ -65,7 +65,7 @@ Both modes use shared `@wid/core` (CircuitBreaker, PolicyCache, CredBuffer, Audi
 | GET | `/api/v1/access/decisions/stats` | Aggregate stats (hourly, top offenders) |
 | GET | `/api/v1/access/decisions/traces` | Trace ID listing |
 | GET | `/api/v1/access/decisions/traces/:traceId` | Full trace chain |
-| GET/POST/PUT/DELETE | `/api/v1/policies[/:id]` | Policy CRUD |
+| GET/POST/PUT/DELETE | `/api/v1/policies[/:id]` | Policy CRUD (GET list includes `compliance_frameworks` via LEFT JOIN on `policy_templates`) |
 | GET | `/api/v1/policies/templates` | Template listing |
 | POST | `/api/v1/governance/seed-agent-policies` | Seed demo enforcement policies |
 | GET | `/api/v1/access/decisions/replay/:traceId` | Deterministic decision replay with policy snapshots |

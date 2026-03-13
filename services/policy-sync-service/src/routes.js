@@ -1107,7 +1107,7 @@ function mountPolicyRoutes(app, dbClient, opts = {}) {
   app.get('/api/v1/policies', async (req, res) => {
     try {
       const { type, enabled } = req.query;
-      let q = `SELECT p.*, (SELECT COUNT(*) FROM policy_violations v WHERE v.policy_id = p.id AND v.status = 'open') as open_violations FROM policies p WHERE 1=1`;
+      let q = `SELECT p.*, (SELECT COUNT(*) FROM policy_violations v WHERE v.policy_id = p.id AND v.status = 'open') as open_violations, pt.compliance_frameworks FROM policies p LEFT JOIN policy_templates pt ON p.template_id = pt.id WHERE 1=1`;
       const params = []; let idx = 1;
       if (type) { q += ` AND p.policy_type=$${idx}`; params.push(type); idx++; }
       if (enabled !== undefined) { q += ` AND p.enabled=$${idx}`; params.push(enabled === 'true'); idx++; }

@@ -41,7 +41,14 @@ WID is an enterprise-grade platform for discovering, attesting, and governing no
 ### 7. Deploy Policy Templates
 <img src="docs/screenshots/policy-templates.png" alt="Policy template gallery with 133 templates across access control, AI agent, credential, and compliance categories" width="100%">
 
+### 8. Compliance Policy Packs
+<img src="docs/screenshots/compliance-dashboard.png" alt="Compliance dashboard showing 5 frameworks — SOC 2 (100%), PCI DSS (100%), NIST 800-53 (99%), ISO 27001 (100%), EU AI Act (97%) — with coverage bars and deploy counts" width="100%">
+
+<img src="docs/screenshots/compliance-soc2-detail.png" alt="SOC 2 Type II drill-down showing CC6.1 Logical Access Controls with 41 policies deployed in audit mode, severity badges, and filter tabs" width="100%">
+
 ---
+
+See [docs/STATUS.md](docs/STATUS.md) for verified evidence behind each claim, with source file links.
 
 ## Implementation Status
 
@@ -267,6 +274,8 @@ Hub-and-spoke federated architecture. GCP Cloud Run is the central control plane
 +--------------------+              +--------------------+
 ```
 
+See [docs/SECURITY.md](docs/SECURITY.md) for security posture, dev/prod boundaries, and threat model.
+
 **Design principles:**
 - **Policy decisions evaluated locally** — embedded OPA engine, no round-trip to central on the hot path (~12-17ms total latency)
 - **Control plane can fail without breaking enforcement** — spokes operate on cached, signed policy bundles (LKG)
@@ -428,19 +437,25 @@ Check scanner status: `GET /api/v1/scanners`
 
 | Service | Tests | Status |
 |---------|-------|--------|
-| policy-sync-service | 120+ | Policy evaluation, template engine, Rego compiler |
-| edge-gateway | 4 | Gateway proxy, policy enforcement |
+| data-plane-core | 80 | PolicyCache, CircuitBreaker, AuditBuffer, AIInspector |
+| policy-sync-service | 31 | Policy evaluation, template engine, Rego compiler |
+| edge-gateway | 23 | Gateway proxy, policy enforcement, AI inspection |
+| token-service | 45 | NHI context, capabilities, trust domains, auth methods |
+| discovery-service | 58 | Security scoring, SPIFFE IDs, categorization |
+| relay-service | 23 | Policy matching, audit buffer, config parsing |
+| credential-broker | 28 | Cache, providers, target configs |
 | ext-authz-adapter | 1 | gRPC adapter (1 failing) |
-| relay-service | 2 | Hub/spoke registration, policy sync |
-| discovery-service | — | Integration-tested via scan + graph endpoints |
-| token-service | — | Integration-tested via attestation flow |
-| credential-broker | — | Integration-tested via Vault provider |
+| **Total** | **~289** | **288 passing, 1 failing** |
 
 ```bash
 # Run all tests
+cd shared/data-plane-core && npm test
 cd services/policy-sync-service && npm test
 cd services/edge-gateway && npm test
+cd services/token-service && npm test
+cd services/discovery-service && npm test
 cd services/relay-service && npm test
+cd services/credential-broker && npm test
 ```
 
 ---

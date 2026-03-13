@@ -1,3 +1,11 @@
+# ===========================================================================
+# DEVELOPMENT ONLY — DO NOT USE IN PRODUCTION
+# ===========================================================================
+# Default passwords below are for local development. For production:
+#   1. Create .env with cryptographically random secrets
+#   2. Follow docs/SECURITY.md hardening checklist
+# ===========================================================================
+
 version: '3.8'
 
 services:

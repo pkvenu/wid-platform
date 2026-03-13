@@ -17,6 +17,10 @@ const DATABASE_URL = process.env.DATABASE_URL || 'postgresql://wip_user:wip_pass
 const OPA_URL = process.env.OPA_URL || 'http://opa:8181';
 const JWT_SECRET = process.env.JWT_SECRET || 'dev-secret-change-in-production';
 
+if (JWT_SECRET === 'dev-secret-change-in-production') {
+  console.warn('WARNING: Using default JWT_SECRET. Set JWT_SECRET env var for production.');
+}
+
 let dbClient = null;
 
 // =============================================================================
