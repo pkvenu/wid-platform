@@ -171,17 +171,60 @@
 - [ ] Security headers (CSP, HSTS, etc.)
 - [ ] Dependency vulnerability scanning in CI
 
+### 2.7 Multi-Cloud Spoke Hardening
+**Status**: Not started
+**Description**: Production-grade spoke deployments across AWS, GCP, and Azure. Current spokes work for demo but lack trust, HA, and observability.
+**Acceptance Criteria**:
+
+**Federation Trust (all clouds)**:
+- [ ] mTLS between spoke relay and central hub (SPIFFE SVIDs for relay identity)
+- [ ] Spoke identity verification on registration (hub validates relay certificate)
+- [ ] Cross-environment delegation chain linking (trace_id spans AWS→GCP hops)
+- [ ] Webhook/push-based policy updates (complement pull-based sync for urgent revocations)
+
+**Relay High Availability**:
+- [ ] Relay desired_count=2+ with health-based routing (AWS ALB, GCP LB)
+- [ ] Audit buffer persistence (SQS/Pub/Sub queue before central) — no event loss on relay crash
+- [ ] Graceful shutdown: drain audit buffer before termination (SIGTERM handler)
+- [ ] Exponential backoff on central sync failures (currently fixed interval)
+
+**Observability**:
+- [ ] Prometheus metrics export from relay (policy_sync_duration, audit_buffer_size, central_reachable)
+- [ ] CloudWatch/Cloud Monitoring dashboards per spoke
+- [ ] Alerting: spoke disconnected >5min, audit buffer >80% full, policy version drift
+
+**AWS Spoke**:
+- [ ] HTTPS on ALB (ACM certificate)
+- [ ] VPC Flow Logs enabled
+- [ ] ECS task auto-scaling (CPU/memory triggers)
+- [ ] Cost tagging for spoke resources
+
+**GCP Central**:
+- [ ] Cloud Run min-instances=1 for relay (avoid cold start on spoke registration)
+- [ ] Cloud Armor WAF rules on LB
+- [ ] Cloud SQL automated backups verified
+- [ ] Secret Manager rotation for DB credentials
+
+**Azure Spoke**:
+- [ ] Complete Container Apps Terraform (currently scaffolding only)
+- [ ] Azure Monitor integration
+- [ ] Managed Identity for relay (no stored credentials)
+- [ ] VNET integration for private connectivity
+
 ---
 
 ## P3 — Nice to Have
 
 ### 3.1 AWS Spoke Deployment
-**Status**: Not started
-**Description**: Terraform modules for deploying relay + edge-gateways in customer AWS.
-**Acceptance Criteria**:
-- [ ] Terraform module for EKS + relay + gateways
-- [ ] Auto-registration with GCP central hub
-- [ ] Verified policy sync and audit forwarding
+**Status**: DONE (deployed March 13, 2026)
+**Files**: `deploy/aws/terraform/spoke/` (main.tf, variables.tf, outputs.tf)
+**Description**: ECS Fargate spoke with relay + N edge-gateways (configurable). Terraform modules for deploying in customer AWS.
+**What was built**:
+- [x] Terraform module: VPC, ECS Fargate, ALB, ECR, IAM, CloudWatch, Service Discovery
+- [x] Relay registers with GCP central hub on startup
+- [x] Policy sync (pull every 15s) and audit forwarding (batch every 5s) verified
+- [x] Gateway configs via `gateway_configs` variable (0 to N gateways)
+- [x] Secrets Manager integration for central API key
 
 ### 3.2 Agent SDK
 **Status**: Not started
@@ -235,3 +278,4 @@
 | P1.2 Replay UI + PDF Export | 2026-03-11 | Audit Replay button, replay panel with policy snapshots, jsPDF export |
 | P2.5 Compliance Policy Packs | 2026-03-11 | 5 frameworks, 68 controls, 125 templates mapped, one-click deploy, coverage dashboard |
 | Token Crypto Upgrade (HS256 → ES256) | 2026-03-13 | ECDSA P-256 asymmetric signing, JWKS endpoint, credential-broker uses validate endpoint, dual verification for migration (ADR-10) |
+| AWS Spoke Deployment | 2026-03-13 | ECS Fargate relay, Terraform module, federation with GCP hub verified |
