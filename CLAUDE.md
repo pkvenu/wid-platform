@@ -81,6 +81,7 @@ When asked for design or implementation, respond with:
 | ADR-08 | Vault for credential brokering | Pluggable providers: vault, aws, gcp, azure, 1password |
 | ADR-09 | Remediation Decision Framework | 6-category taxonomy, decision routing, approval tiers |
 | ADR-10 | ES256 for workload tokens | Asymmetric signing (ECDSA P-256). Only token-service holds private key. JWKS for verification. HS256 fallback during migration. |
+| ADR-11 | MCP Runtime Auditing + Agent Card Signing | MCPInspector mirrors AIInspector (zero-copy tee, async parse). Tool argument values redacted by default. Agent Cards signed with same ES256 keys as token-service. |
 
 ---
 

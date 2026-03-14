@@ -566,6 +566,7 @@ function mountPolicyRoutes(app, dbClient, opts = {}) {
 
       let inserted = 0;
       let aiInserted = 0;
+      let mcpInserted = 0;
       for (const e of entries) {
         try {
           // Route AI telemetry events to dedicated table
@@ -629,6 +630,55 @@ function mountPolicyRoutes(app, dbClient, opts = {}) {
             continue;
           }
 
+          // Route MCP tool call events to dedicated table
+          if (e.event_type === 'mcp_tool_call') {
+            await dbClient.query(
+              `INSERT INTO mcp_tool_events (
+                decision_id, source_name, source_principal, destination_host,
+                jsonrpc_method, jsonrpc_id, tool_name, tool_arguments,
+                resource_uri, prompt_name, mcp_server_name,
+                body_bytes, truncated, relay_id, relay_env, gateway_id
+              ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16)`,
+              [
+                e.decision_id, e.source_name, e.source_principal, e.destination_host,
+                e.jsonrpc_method, e.jsonrpc_id || null, e.tool_name || null,
+                JSON.stringify(e.tool_arguments || {}),
+                e.resource_uri || null, e.prompt_name || null, e.mcp_server_name || null,
+                e.body_bytes || 0, e.truncated || false,
+                e.relay_id || null, e.relay_env || null, e.gateway_id || null
+              ]
+            );
+            mcpInserted++;
+            inserted++;
+            continue;
+          }
+
+          // Route MCP tool response events — update existing row with response metadata
+          if (e.event_type === 'mcp_tool_response' && e.decision_id) {
+            await dbClient.query(
+              `UPDATE mcp_tool_events SET
+                response_status = COALESCE($2, response_status),
+                result_type = COALESCE($3, result_type),
+                result_size_bytes = COALESCE($4, result_size_bytes),
+                error_code = COALESCE($5, error_code),
+                error_message = COALESCE($6, error_message),
+                latency_ms = COALESCE($7, latency_ms)
+              WHERE decision_id = $1`,
+              [
+                e.decision_id,
+                e.response_status ?? null,
+                e.result_type ?? null,
+                e.result_size_bytes ?? null,
+                e.error_code ?? null,
+                e.error_message ?? null,
+                e.latency_ms ?? null,
+              ]
+            );
+            mcpInserted++;
+            inserted++;
+            continue;
+          }
+
           await dbClient.query(
             `INSERT INTO ext_authz_decisions (decision_id, source_principal, destination_principal, source_name, destination_name, method, path_pattern, verdict, policy_name, adapter_mode, latency_ms, cached, token_jti, chain_depth, trace_id, parent_decision_id, hop_index, total_hops, enforcement_action, enforcement_detail, token_context, request_context, response_context)
              VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23)`,
@@ -644,7 +694,7 @@ function mountPolicyRoutes(app, dbClient, opts = {}) {
           inserted++;
         } catch (dbErr) { console.error('[batch] INSERT failed:', dbErr.message, 'decision_id:', e.decision_id); }
       }
-      res.json({ accepted: inserted, total: entries.length, ai_events: aiInserted });
+      res.json({ accepted: inserted, total: entries.length, ai_events: aiInserted, mcp_events: mcpInserted });
     } catch (e) { res.status(500).json({ error: e.message }); }
   });
 
@@ -1045,6 +1095,90 @@ function mountPolicyRoutes(app, dbClient, opts = {}) {
 
       res.json({ hourly, topDenied, enforcementFunnel, openViolations, workloadContext });
     } catch (e) {
+      res.status(500).json({ error: e.message });
+    }
+  });
+
+  // ══════════════════════════════════════════════
+  // MCP Telemetry Endpoints
+  // ══════════════════════════════════════════════
+
+  // GET /api/v1/mcp/events — Filtered MCP tool call events
+  app.get('/api/v1/mcp/events', async (req, res) => {
+    try {
+      const { server, tool, source, method, since, limit: rawLimit } = req.query;
+      let q = 'SELECT * FROM mcp_tool_events WHERE 1=1';
+      const p = []; let i = 1;
+
+      if (server) { q += ` AND LOWER(mcp_server_name) LIKE $${i}`; p.push(`%${server.toLowerCase()}%`); i++; }
+      if (tool) { q += ` AND LOWER(tool_name) LIKE $${i}`; p.push(`%${tool.toLowerCase()}%`); i++; }
+      if (source) { q += ` AND LOWER(source_name) LIKE $${i}`; p.push(`%${source.toLowerCase()}%`); i++; }
+      if (method) { q += ` AND jsonrpc_method = $${i}`; p.push(method); i++; }
+      if (since) { q += ` AND created_at > $${i}`; p.push(since); i++; }
+
+      q += ` ORDER BY created_at DESC LIMIT $${i}`;
+      p.push(Math.min(parseInt(rawLimit) || 200, 500));
+
+      const r = await dbClient.query(q, p);
+      res.json({ total: r.rows.length, events: r.rows });
+    } catch (e) {
+      if (e.message?.includes('does not exist')) {
+        return res.json({ total: 0, events: [], note: 'mcp_tool_events table not yet created' });
+      }
+      res.status(500).json({ error: e.message });
+    }
+  });
+
+  // GET /api/v1/mcp/events/stats — Aggregated MCP telemetry stats
+  app.get('/api/v1/mcp/events/stats', async (req, res) => {
+    try {
+      const hours = Math.min(parseInt(req.query.hours) || 24, 168);
+      const since = `NOW() - INTERVAL '${hours} hours'`;
+
+      let byServer = [], byTool = [], bySource = [];
+      try {
+        const sR = await dbClient.query(`
+          SELECT mcp_server_name, COUNT(*) AS call_count,
+                 COUNT(DISTINCT tool_name) AS unique_tools,
+                 COUNT(DISTINCT source_name) AS unique_sources,
+                 AVG(latency_ms) AS avg_latency_ms,
+                 COUNT(CASE WHEN error_code IS NOT NULL THEN 1 END) AS error_count,
+                 MAX(created_at) AS last_seen
+          FROM mcp_tool_events WHERE created_at > ${since}
+          GROUP BY mcp_server_name ORDER BY call_count DESC LIMIT 50
+        `);
+        byServer = sR.rows;
+      } catch { /* table may not exist */ }
+
+      try {
+        const tR = await dbClient.query(`
+          SELECT tool_name, COUNT(*) AS call_count,
+                 COUNT(DISTINCT source_name) AS unique_callers,
+                 AVG(latency_ms) AS avg_latency_ms,
+                 MAX(created_at) AS last_seen
+          FROM mcp_tool_events WHERE created_at > ${since} AND tool_name IS NOT NULL
+          GROUP BY tool_name ORDER BY call_count DESC LIMIT 50
+        `);
+        byTool = tR.rows;
+      } catch { /* table may not exist */ }
+
+      try {
+        const srcR = await dbClient.query(`
+          SELECT source_name, COUNT(*) AS call_count,
+                 COUNT(DISTINCT mcp_server_name) AS unique_servers,
+                 COUNT(DISTINCT tool_name) AS unique_tools,
+                 MAX(created_at) AS last_seen
+          FROM mcp_tool_events WHERE created_at > ${since}
+          GROUP BY source_name ORDER BY call_count DESC LIMIT 50
+        `);
+        bySource = srcR.rows;
+      } catch { /* table may not exist */ }
+
+      res.json({ hours, byServer, byTool, bySource });
+    } catch (e) {
+      if (e.message?.includes('does not exist')) {
+        return res.json({ hours: 24, byServer: [], byTool: [], bySource: [], note: 'mcp_tool_events table not yet created' });
+      }
       res.status(500).json({ error: e.message });
     }
   });

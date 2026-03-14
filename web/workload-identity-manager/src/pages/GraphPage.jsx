@@ -171,6 +171,14 @@ const CONTROL_CATALOG_FALLBACK = {
   'a2a-unsigned-card': [
     { id: 'require-signed-card', name: 'Require Signed Agent Cards', description: 'All A2A Agent Cards must be signed with JWS for authenticity verification', action_type: 'harden', remediation_type: 'code_change', path_break: { edge_position: 'entry', edges_severed: 1, crown_jewel_proximity: 0.5 }, feasibility: { preconditions: ['jws-signing-available'], effort: 'hours', automated: true }, operational: { implementation: 2, ongoing_toil: 0, expertise: 'low' }, template_id: 'a2a-agent-card-signing' },
   ],
+  'mcp-capability-drift': [
+    { id: 'mcp-drift-investigate', name: 'Investigate Capability Change', description: 'MCP server capabilities changed since last scan. Investigate whether the change was authorized.', action_type: 'investigate', remediation_type: 'process', path_break: { edge_position: 'entry', edges_severed: 0, crown_jewel_proximity: 0.5 }, feasibility: { preconditions: [], effort: 'hours', automated: false }, operational: { implementation: 3, ongoing_toil: 2, expertise: 'medium' }, template_id: null },
+    { id: 'mcp-drift-pin-version', name: 'Pin MCP Server Version', description: 'Pin the MCP server to a specific known-good version to prevent unauthorized capability changes.', action_type: 'harden', remediation_type: 'code_change', path_break: { edge_position: 'entry', edges_severed: 1, crown_jewel_proximity: 0.7 }, feasibility: { preconditions: [], effort: 'hours', automated: true }, operational: { implementation: 2, ongoing_toil: 1, expertise: 'low' }, template_id: 'mcp-integrity-verification' },
+  ],
+  'a2a-invalid-signature': [
+    { id: 'a2a-investigate-invalid-sig', name: 'Investigate Tampered Card', description: 'Agent Card signature is invalid — card content may have been tampered with.', action_type: 'investigate', remediation_type: 'process', path_break: { edge_position: 'entry', edges_severed: 0, crown_jewel_proximity: 0.8 }, feasibility: { preconditions: [], effort: 'hours', automated: false }, operational: { implementation: 3, ongoing_toil: 1, expertise: 'medium' }, template_id: null },
+    { id: 'a2a-block-invalid-sig', name: 'Block Invalid Signatures', description: 'Deploy policy to deny task delegation to agents with invalid signatures.', action_type: 'policy', remediation_type: 'policy', path_break: { edge_position: 'entry', edges_severed: 2, crown_jewel_proximity: 0.9 }, feasibility: { preconditions: ['policy-engine-deployed'], effort: 'hours', automated: true }, operational: { implementation: 1, ongoing_toil: 0, expertise: 'low' }, template_id: 'a2a-agent-card-signing' },
+  ],
   'shared-sa': [
     { id: 'dedicated-sa', name: 'Assign Dedicated Service Account', description: 'Replace shared service account with per-workload dedicated SAs with least-privilege roles', action_type: 'architecture', remediation_type: 'iac', path_break: { edge_position: 'entry', edges_severed: 2, crown_jewel_proximity: 0.9 }, feasibility: { preconditions: [], effort: 'days', automated: false }, operational: { implementation: 5, ongoing_toil: 1, expertise: 'medium' }, template_id: 'shared-service-account-deny' },
     { id: 'workload-identity-federation', name: 'Migrate to Workload Identity Federation', description: 'Use GCP Workload Identity Federation to eliminate service account keys entirely', action_type: 'replace', remediation_type: 'iac', path_break: { edge_position: 'entry', edges_severed: 3, crown_jewel_proximity: 1.0 }, feasibility: { preconditions: ['gcp-project-access'], effort: 'days', automated: true }, operational: { implementation: 4, ongoing_toil: 0, expertise: 'medium' }, template_id: 'env-credential-isolation' },
@@ -216,6 +224,8 @@ const FINDING_LABELS_FALLBACK = {
   'mcp-tool-poisoning': 'MCP Tool Poisoning',
   'mcp-unverified-server': 'Unverified MCP Server',
   'mcp-outdated-version': 'Outdated MCP Server',
+  'mcp-capability-drift': 'MCP Capability Drift',
+  'a2a-invalid-signature': 'A2A Invalid Signature',
 };
 
 const FINDING_DESCRIPTIONS_FALLBACK = {
@@ -240,6 +250,8 @@ const FINDING_DESCRIPTIONS_FALLBACK = {
   'mcp-tool-poisoning': 'MCP server tool descriptions contain hidden instructions (prompt injection, exfiltration, or unauthorized actions). Disconnect immediately and audit invocations.',
   'mcp-unverified-server': 'MCP server package is not in the known-good registry. Cannot confirm publisher identity or integrity. Pin to a verified package.',
   'mcp-outdated-version': 'MCP server is running below the minimum recommended version. Outdated versions may have known security vulnerabilities. Update immediately.',
+  'mcp-capability-drift': 'MCP server capabilities changed since last scan — tools added, removed, or descriptions modified. Investigate for supply-chain tampering.',
+  'a2a-invalid-signature': 'A2A Agent Card has an invalid cryptographic signature. Card may have been tampered with. Investigate immediately.',
 };
 
 const SEV_ORDER = { critical: 0, high: 1, medium: 2, low: 3, info: 4 };

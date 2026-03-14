@@ -1984,6 +1984,34 @@ async function start() {
       // Start periodic discovery
       startPeriodicDiscovery();
 
+      // Start periodic MCP server fingerprint rescan
+      if (dbClient) {
+        const MCP_RESCAN_INTERVAL = parseInt(process.env.MCP_RESCAN_INTERVAL_MS) || 300000; // 5 min default
+        setTimeout(() => {
+          console.log('🔄 Starting periodic MCP fingerprint rescan...');
+          const runMCPRescan = async () => {
+            try {
+              const RelScanner = require('./graph/relationship-scanner');
+              const scanner = new RelScanner();
+              const results = await scanner.rescanMCPServers(dbClient);
+              if (results.drifted > 0) {
+                console.log(`⚠️  MCP drift detected: ${results.drifted} server(s) changed capabilities`);
+                // Add drift findings to the graph
+                try {
+                  const { clearGraphCache, refreshGraph } = require('./graph/graph-routes');
+                  clearGraphCache();
+                  await refreshGraph(dbClient);
+                } catch { /* graph rebuild best-effort */ }
+              }
+            } catch (e) {
+              console.error('  MCP rescan error:', e.message);
+            }
+          };
+          runMCPRescan();
+          setInterval(runMCPRescan, MCP_RESCAN_INTERVAL);
+        }, 60000); // Start 60s after boot (after initial connector scan)
+      }
+
       // Start periodic cloud log enrichment (every 5 minutes)
       if (dbClient) {
         const CLOUD_LOG_INTERVAL = parseInt(process.env.CLOUD_LOG_INTERVAL_MS) || 300000;

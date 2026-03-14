@@ -664,6 +664,56 @@ app.get('/.well-known/openid-configuration', (req, res) => {
   });
 });
 
+// =============================================================================
+// Agent Card JWS Signing Endpoint
+// =============================================================================
+
+app.post('/api/v1/agent-card/sign', async (req, res) => {
+  const requestId = req.headers['x-request-id'] || generateRequestId();
+  try {
+    const card = req.body;
+    if (!card || !card.name) {
+      return res.status(400).json({
+        error: 'Bad Request',
+        message: 'Agent Card must include at least a "name" field',
+        request_id: requestId,
+      });
+    }
+
+    const privateKeyPem = tokenCrypto.getPrivateKeyPem();
+    if (!privateKeyPem) {
+      return res.status(503).json({
+        error: 'Service Unavailable',
+        message: 'Agent Card signing requires ES256 mode. HS256 fallback does not support card signing.',
+        request_id: requestId,
+      });
+    }
+
+    const { signAgentCard } = require('../../../shared/agent-card-signer');
+    const kid = tokenCrypto.getKid();
+    const jws = signAgentCard(card, privateKeyPem, {
+      kid,
+      iss: 'workload-identity-platform',
+      expiresInSeconds: 30 * 24 * 60 * 60, // 30 days
+    });
+
+    res.json({
+      jws,
+      kid,
+      algorithm: 'ES256',
+      expires_in: 30 * 24 * 60 * 60,
+      request_id: requestId,
+    });
+  } catch (error) {
+    console.error(`[${requestId}] Agent Card signing error:`, error.message);
+    res.status(500).json({
+      error: 'Internal Server Error',
+      message: 'Failed to sign Agent Card',
+      request_id: requestId,
+    });
+  }
+});
+
 // Health check
 app.get('/health', (req, res) => {
   res.json({

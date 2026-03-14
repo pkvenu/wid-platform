@@ -1171,6 +1171,77 @@ CREATE INDEX IF NOT EXISTS idx_ps_created ON policy_snapshots(created_at DESC);
 ALTER TABLE ext_authz_decisions ADD COLUMN IF NOT EXISTS policy_version VARCHAR(64);
 
 -- ═══════════════════════════════════════════════════════════════════════════════
+-- MCP TOOL INVOCATION TELEMETRY
+-- ═══════════════════════════════════════════════════════════════════════════════
+
+CREATE TABLE IF NOT EXISTS mcp_tool_events (
+    id                  SERIAL PRIMARY KEY,
+    decision_id         VARCHAR(64),
+    source_name         VARCHAR(255),
+    source_principal    TEXT,
+    destination_host    VARCHAR(255),
+    jsonrpc_method      VARCHAR(100) NOT NULL,
+    jsonrpc_id          VARCHAR(64),
+    tool_name           VARCHAR(255),
+    tool_arguments      JSONB DEFAULT '{}',
+    resource_uri        TEXT,
+    prompt_name         VARCHAR(255),
+    mcp_server_name     VARCHAR(255),
+    body_bytes          INTEGER DEFAULT 0,
+    truncated           BOOLEAN DEFAULT FALSE,
+    relay_id            VARCHAR(100),
+    relay_env           VARCHAR(100),
+    gateway_id          VARCHAR(100),
+    response_status     INTEGER,
+    result_type         VARCHAR(50),
+    result_size_bytes   INTEGER,
+    error_code          INTEGER,
+    error_message       VARCHAR(500),
+    latency_ms          INTEGER,
+    created_at          TIMESTAMPTZ DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_mcp_evt_source      ON mcp_tool_events(source_name);
+CREATE INDEX IF NOT EXISTS idx_mcp_evt_dest         ON mcp_tool_events(destination_host);
+CREATE INDEX IF NOT EXISTS idx_mcp_evt_tool         ON mcp_tool_events(tool_name);
+CREATE INDEX IF NOT EXISTS idx_mcp_evt_method       ON mcp_tool_events(jsonrpc_method);
+CREATE INDEX IF NOT EXISTS idx_mcp_evt_created      ON mcp_tool_events(created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_mcp_evt_decision     ON mcp_tool_events(decision_id);
+
+COMMENT ON TABLE mcp_tool_events IS 'MCP JSON-RPC tool call telemetry detected by edge gateway MCPInspector';
+
+-- ═══════════════════════════════════════════════════════════════════════════════
+-- MCP SERVER CAPABILITY FINGERPRINTS
+-- ═══════════════════════════════════════════════════════════════════════════════
+
+CREATE TABLE IF NOT EXISTS mcp_fingerprints (
+    id                      SERIAL PRIMARY KEY,
+    workload_name           VARCHAR(255) NOT NULL,
+    server_name             VARCHAR(255),
+    server_version          VARCHAR(50),
+    protocol_version        VARCHAR(20),
+    fingerprint             VARCHAR(64) NOT NULL,
+    tool_descriptions_hash  VARCHAR(64),
+    tool_count              INTEGER DEFAULT 0,
+    tool_names              TEXT[] DEFAULT '{}',
+    resource_count          INTEGER DEFAULT 0,
+    prompt_count            INTEGER DEFAULT 0,
+    capabilities_snapshot   JSONB DEFAULT '{}',
+    previous_fingerprint    VARCHAR(64),
+    drift_detected          BOOLEAN DEFAULT FALSE,
+    drift_details           JSONB,
+    scan_source             VARCHAR(50) DEFAULT 'periodic',
+    created_at              TIMESTAMPTZ DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_mcp_fp_workload  ON mcp_fingerprints(workload_name);
+CREATE INDEX IF NOT EXISTS idx_mcp_fp_server    ON mcp_fingerprints(server_name);
+CREATE INDEX IF NOT EXISTS idx_mcp_fp_drift     ON mcp_fingerprints(drift_detected) WHERE drift_detected = TRUE;
+CREATE INDEX IF NOT EXISTS idx_mcp_fp_created   ON mcp_fingerprints(created_at DESC);
+
+COMMENT ON TABLE mcp_fingerprints IS 'MCP server capability fingerprints for drift detection';
+
+-- ═══════════════════════════════════════════════════════════════════════════════
 -- VERIFICATION
 -- ═══════════════════════════════════════════════════════════════════════════════
 
@@ -1183,7 +1254,8 @@ DECLARE
         'identity_graph', 'authorization_events', 'policy_evaluations',
         'identity_graph_history', 'ai_request_events',
         'remediation_intents', 'remediation_templates', 'finding_type_metadata',
-        'connectors', 'users', 'policy_snapshots'
+        'connectors', 'users', 'policy_snapshots',
+        'mcp_tool_events', 'mcp_fingerprints'
     ];
     tbl TEXT;
 BEGIN
@@ -1197,7 +1269,7 @@ BEGIN
     RAISE NOTICE '═══════════════════════════════════════════════════════════════';
     RAISE NOTICE '  ✅ Workload Identity Platform — Database initialized';
     RAISE NOTICE '═══════════════════════════════════════════════════════════════';
-    RAISE NOTICE '  Tables:    21 created';
+    RAISE NOTICE '  Tables:    23 created';
     RAISE NOTICE '  Indexes:   56 created';
     RAISE NOTICE '  Views:     6 created';
     RAISE NOTICE '  Functions: 7 created';

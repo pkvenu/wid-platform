@@ -20,7 +20,7 @@ const crypto = require('crypto');
 const {
   parseJSON, log, setLogLevel, setStructuredLogs, httpRequest,
   PolicyCache, CredentialBuffer, CircuitBreaker,
-  MetricsCollector, AuditBuffer, AIInspector,
+  MetricsCollector, AuditBuffer, AIInspector, MCPInspector,
   sanitizePath, extractWorkloadName, buildAuditEntry,
   generateIptablesScript,
 } = require('@wid/core');
@@ -78,6 +78,10 @@ const CONFIG = {
   aiInspectionEnabled: process.env.AI_INSPECTION_ENABLED !== 'false',
   aiInspectionMaxBodyBytes: parseInt(process.env.AI_INSPECTION_MAX_BODY_BYTES) || 65536,
 
+  // MCP Inspection
+  mcpInspectionEnabled: process.env.MCP_INSPECTION_ENABLED !== 'false',
+  mcpServerHosts: (process.env.MCP_SERVER_HOSTS || '').split(',').filter(Boolean),
+
   // Logging
   logLevel: process.env.LOG_LEVEL || 'info',
   structuredLogs: process.env.STRUCTURED_LOGS === 'true',
@@ -92,7 +96,7 @@ setStructuredLogs(CONFIG.structuredLogs);
 // =============================================================================
 
 function createOutboundProxy(deps) {
-  const { policyCache, credBuffer, policyBreaker, tokenBreaker, metrics, auditBuffer, aiInspector } = deps;
+  const { policyCache, credBuffer, policyBreaker, tokenBreaker, metrics, auditBuffer, aiInspector, mcpInspector } = deps;
 
   return http.createServer(async (req, res) => {
     const start = Date.now();
@@ -140,7 +144,7 @@ function createOutboundProxy(deps) {
       metrics.record('allow', Date.now() - start);
       metrics.recordCacheHit();
       auditBuffer.push(buildAuditEntry(decisionId, sourcePrincipal, destPrincipal, method, rawPath, 'allow', cached, Date.now() - start, true));
-      return proxyWithHeaders(req, res, destHost, destPort, decisionId, start, cached.tokenData, chainDepth, aiInspector);
+      return proxyWithHeaders(req, res, destHost, destPort, decisionId, start, cached.tokenData, chainDepth, aiInspector, mcpInspector);
     }
 
     // Policy evaluation
@@ -183,7 +187,7 @@ function createOutboundProxy(deps) {
       }
       metrics.record('allow', Date.now() - start);
       auditBuffer.push(buildAuditEntry(decisionId, sourcePrincipal, destPrincipal, method, rawPath, 'fail-open', null, Date.now() - start, false));
-      return proxyWithHeaders(req, res, destHost, destPort, decisionId, start, null, chainDepth, aiInspector);
+      return proxyWithHeaders(req, res, destHost, destPort, decisionId, start, null, chainDepth, aiInspector, mcpInspector);
     }
 
     // Policy denied
@@ -192,7 +196,7 @@ function createOutboundProxy(deps) {
       if (mode === 'audit') {
         metrics.record('deny', Date.now() - start);
         auditBuffer.push(buildAuditEntry(decisionId, sourcePrincipal, destPrincipal, method, rawPath, 'audit-deny', policyResult, Date.now() - start, false));
-        return proxyWithHeaders(req, res, destHost, destPort, decisionId, start, null, chainDepth, aiInspector);
+        return proxyWithHeaders(req, res, destHost, destPort, decisionId, start, null, chainDepth, aiInspector, mcpInspector);
       }
       metrics.record('deny', Date.now() - start);
       auditBuffer.push(buildAuditEntry(decisionId, sourcePrincipal, destPrincipal, method, rawPath, 'deny', policyResult, Date.now() - start, false));
@@ -231,7 +235,7 @@ function createOutboundProxy(deps) {
     policyCache.set(sourcePrincipal, destPrincipal, method, rawPath, { decision: policyResult, tokenData });
     metrics.record('allow', Date.now() - start);
     auditBuffer.push(buildAuditEntry(decisionId, sourcePrincipal, destPrincipal, method, rawPath, 'allow', policyResult, Date.now() - start, false));
-    return proxyWithHeaders(req, res, destHost, destPort, decisionId, start, tokenData, chainDepth, aiInspector);
+    return proxyWithHeaders(req, res, destHost, destPort, decisionId, start, tokenData, chainDepth, aiInspector, mcpInspector);
   });
 }
 
@@ -318,7 +322,7 @@ function mapRequestToCapability(method, path) {
 // =============================================================================
 
 function createAdminServer(deps) {
-  const { policyCache, credBuffer, policyBreaker, tokenBreaker, metrics, auditBuffer, aiInspector } = deps;
+  const { policyCache, credBuffer, policyBreaker, tokenBreaker, metrics, auditBuffer, aiInspector, mcpInspector } = deps;
 
   return http.createServer((req, res) => {
     res.setHeader('Content-Type', 'application/json');
@@ -331,7 +335,7 @@ function createAdminServer(deps) {
       return res.end(JSON.stringify({ ready: true, policyBreaker: policyBreaker.getState(), tokenBreaker: tokenBreaker.getState() }));
     }
     if (url === '/metrics') {
-      return res.end(JSON.stringify({ decisions: metrics.getSnapshot(), cache: policyCache.getStats(), credentialBuffer: credBuffer.getStats(), breakers: { policy: policyBreaker.getState(), token: tokenBreaker.getState() }, audit: auditBuffer.getStats(), aiInspection: aiInspector?.getStats() || {} }));
+      return res.end(JSON.stringify({ decisions: metrics.getSnapshot(), cache: policyCache.getStats(), credentialBuffer: credBuffer.getStats(), breakers: { policy: policyBreaker.getState(), token: tokenBreaker.getState() }, audit: auditBuffer.getStats(), aiInspection: aiInspector?.getStats() || {}, mcpInspection: mcpInspector?.getStats() || {} }));
     }
     if (url === '/metrics/prometheus') { res.setHeader('Content-Type', 'text/plain'); return res.end(metrics.toPrometheus()); }
     if (url === '/cache/clear' && req.method === 'POST') { policyCache.clear(); return res.end(JSON.stringify({ cleared: true })); }
@@ -359,7 +363,7 @@ function createAdminServer(deps) {
 // Proxy Helpers
 // =============================================================================
 
-function proxyWithHeaders(clientReq, clientRes, destHost, destPort, decisionId, start, tokenData, chainDepth, aiInspector) {
+function proxyWithHeaders(clientReq, clientRes, destHost, destPort, decisionId, start, tokenData, chainDepth, aiInspector, mcpInspector) {
   const opts = {
     hostname: destHost, port: destPort, path: clientReq.url,
     method: clientReq.method, headers: { ...clientReq.headers },
@@ -377,6 +381,8 @@ function proxyWithHeaders(clientReq, clientRes, destHost, destPort, decisionId, 
   }
   // ── AI Inspection: detect before creating proxy request ──
   const aiMatch = aiInspector?.detectAIEndpoint(clientReq.headers.host);
+  // ── MCP Inspection: detect MCP server traffic ──
+  const mcpMatch = mcpInspector?.detectMCPEndpoint(clientReq.headers.host);
 
   const proxyReq = http.request(opts, (proxyRes) => {
     proxyRes.headers['x-wid-decision-id'] = decisionId;
@@ -384,8 +390,11 @@ function proxyWithHeaders(clientReq, clientRes, destHost, destPort, decisionId, 
       // AI traffic: intercept response for telemetry (tokens, cost, status)
       // captureResponse handles writeHead + piping to clientRes internally
       aiInspector.captureResponse(proxyRes, clientRes, aiMatch, decisionId);
+    } else if (mcpMatch && clientReq.method === 'POST') {
+      // MCP traffic: intercept response for telemetry
+      mcpInspector.captureResponse(proxyRes, clientRes, mcpMatch, decisionId, start);
     } else {
-      // Non-AI: unchanged pipe
+      // Non-AI/MCP: unchanged pipe
       clientRes.writeHead(proxyRes.statusCode, proxyRes.headers);
       proxyRes.pipe(clientRes);
     }
@@ -402,8 +411,16 @@ function proxyWithHeaders(clientReq, clientRes, destHost, destPort, decisionId, 
     );
     clientReq.pipe(tee);       // copy goes to inspector (async parse)
     clientReq.pipe(proxyReq);  // original goes to destination (unchanged)
+  } else if (mcpMatch && clientReq.method === 'POST') {
+    // ── MCP Inspection Tee — request body (zero latency impact) ──
+    const tee = mcpInspector.teeRequest(
+      clientReq, mcpMatch, destHost, clientReq.method,
+      sanitizePath(clientReq.url), decisionId,
+    );
+    clientReq.pipe(tee);       // copy goes to inspector (async parse)
+    clientReq.pipe(proxyReq);  // original goes to destination (unchanged)
   } else {
-    clientReq.pipe(proxyReq);  // non-AI: unchanged behavior
+    clientReq.pipe(proxyReq);  // non-AI/MCP: unchanged behavior
   }
 }
 
@@ -479,7 +496,15 @@ async function main() {
     maxBodyBytes: CONFIG.aiInspectionMaxBodyBytes,
   });
 
-  const deps = { policyCache, credBuffer, policyBreaker, tokenBreaker, metrics, auditBuffer, aiInspector };
+  const mcpInspector = new MCPInspector({
+    auditBuffer,
+    workloadName: CONFIG.workloadName,
+    spiffeId: CONFIG.spiffeId,
+    enabled: CONFIG.mcpInspectionEnabled,
+    mcpHosts: CONFIG.mcpServerHosts,
+  });
+
+  const deps = { policyCache, credBuffer, policyBreaker, tokenBreaker, metrics, auditBuffer, aiInspector, mcpInspector };
 
   const outbound = createOutboundProxy(deps);
   const inbound = createInboundProxy(deps);

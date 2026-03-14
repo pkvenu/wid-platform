@@ -605,6 +605,7 @@ echo "✅ iptables rules applied (outbound→:${outPort}, inbound→:${inPort})"
 // ── AI Inspection ────────────────────────────────────────────────────────────
 
 const { AIInspector } = require('./ai-inspector');
+const { MCPInspector } = require('./mcp-inspector');
 
 // ── Exports ──────────────────────────────────────────────────────────────────
 
@@ -625,6 +626,7 @@ module.exports = {
   MetricsCollector,
   AuditBuffer,
   AIInspector,
+  MCPInspector,
 
   // Sanitization
   SENSITIVE_HEADERS,

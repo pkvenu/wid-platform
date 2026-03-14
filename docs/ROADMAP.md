@@ -108,6 +108,50 @@
 - [x] Known-good registry with 12 verified packages (official @modelcontextprotocol/* servers)
 **Why it matters**: Supply chain attacks against MCP servers are confirmed (Postmark, Smithery). No vendor provides MCP integrity verification at scale. This is the "Snyk for MCP servers" positioning.
 
+### 1.4 MCP Tool Invocation Auditing (Runtime)
+**Status**: DONE (deployed March 13, 2026)
+**Files**: `mcp-inspector.js`, `core.js`, `gateway.js`, `routes.js`, `14-mcp-telemetry.sql`, `init.sql`
+**Description**: Intercept MCP JSON-RPC traffic at the edge gateway, log structured telemetry to dedicated audit table. Zero hot-path latency (same pattern as AIInspector).
+**What was built**:
+- [x] MCPInspector class mirroring AIInspector (zero-copy tee, async parse, AuditBuffer emission)
+- [x] O(1) MCP host detection via configurable Set
+- [x] Tool argument values redacted by default (keys only, zero customer data)
+- [x] `mcp_tool_events` table with indexes on source, destination, tool, method, created_at
+- [x] Batch routing in policy-sync-service (mcp_tool_call INSERT, mcp_tool_response UPDATE)
+- [x] `GET /api/v1/mcp/events` — filtered MCP events query
+- [x] `GET /api/v1/mcp/events/stats` — aggregated stats by server, tool, source
+- [x] 21 tests passing
+
+### 1.5 Dynamic Capability Fingerprinting
+**Status**: DONE (deployed March 13, 2026)
+**Files**: `protocol-scanner.js`, `graph-routes.js`, `discovery index.js`, `15-mcp-fingerprints.sql`, `init.sql`
+**Description**: Periodically re-probe MCP servers, detect capability drift (tools added/removed, descriptions changed). Catches post-deployment supply chain poisoning.
+**What was built**:
+- [x] Enhanced fingerprint includes tool descriptions hash (catches description-only poisoning)
+- [x] `rescanMCPServers()` method: re-probe, compute fingerprint, compare, store drift
+- [x] `_computeDriftDetails()`: tools added/removed, description change detection
+- [x] `mcp_fingerprints` table with drift tracking
+- [x] Periodic scheduler (default 5 min, configurable via `MCP_RESCAN_INTERVAL_MS`)
+- [x] `mcp-capability-drift` finding type (severity: high, category: supply-chain)
+- [x] 2 new controls: `mcp-drift-investigate`, `mcp-drift-pin-version`
+- [x] `GET /api/v1/mcp/fingerprints` and `GET /api/v1/mcp/fingerprints/:workloadName/drift` endpoints
+- [x] 15 tests passing
+
+### 1.6 Agent Card JWS Signing & Verification
+**Status**: DONE (deployed March 13, 2026)
+**Files**: `agent-card-signer.js`, `crypto.js`, `token-service index.js`, `protocol-scanner.js`, `agent-base.js`, `GraphPage.jsx`
+**Description**: Cryptographically sign A2A Agent Cards with ES256 (same keys as token-service), verify during discovery, expose 4-state verification status.
+**What was built**:
+- [x] `shared/agent-card-signer.js` — zero-dependency JWS compact serialization (sign + verify)
+- [x] Token-service `getPrivateKeyPem()`/`getPublicKeyPem()` exports
+- [x] `POST /api/v1/agent-card/sign` endpoint (30-day expiry, issuer: workload-identity-platform)
+- [x] Demo agents sign Agent Cards on startup (graceful degradation if token-service unavailable)
+- [x] Protocol scanner verifies JWS signatures during discovery (JWKS cached 1 hour)
+- [x] 4-state signature status: `verified`, `invalid`, `unverified`, `unsigned`
+- [x] `a2a-invalid-signature` finding type (severity: high) with 2 controls
+- [x] Graph nodes show `signature_status` and `signature_kid` in metadata
+- [x] 14 tests passing
+
 ---
 
 ## P2 — Production Readiness

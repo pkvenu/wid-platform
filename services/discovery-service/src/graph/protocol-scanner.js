@@ -701,11 +701,75 @@ class ProtocolScanner {
       const card = JSON.parse(data);
       if (card.name && (card.skills || card.capabilities || card.supportedInterfaces)) {
         this.log(`A2A Agent Card: ${card.name} at ${url}`, 'success');
+
+        // ── JWS Signature Verification ──
+        if (card.signature) {
+          try {
+            const { verifyAgentCard } = require('../../../../shared/agent-card-signer');
+            // Fetch JWKS from token-service (cached via _jwksCache)
+            const publicKeyPem = await this._getSigningPublicKey();
+            if (publicKeyPem) {
+              const jwsParts = card.signature.split('.');
+              if (jwsParts.length === 3) {
+                // Parse header for kid
+                const headerJson = Buffer.from(jwsParts[0], 'base64url').toString('utf8');
+                const header = JSON.parse(headerJson);
+                const result = verifyAgentCard(card.signature, publicKeyPem);
+                card._signatureVerified = {
+                  valid: result.valid,
+                  error: result.error || null,
+                  kid: header.kid || null,
+                };
+                this.log(`A2A signature verification: ${result.valid ? 'VALID' : 'INVALID'} (kid=${header.kid})`, result.valid ? 'success' : 'warn');
+              } else {
+                card._signatureVerified = { valid: false, error: 'Invalid JWS format', kid: null };
+              }
+            } else {
+              card._signatureVerified = { valid: false, error: 'Could not fetch public key', kid: null };
+              this.log('A2A signature: could not fetch public key for verification');
+            }
+          } catch (e) {
+            card._signatureVerified = { valid: false, error: e.message, kid: null };
+            this.log(`A2A signature verification error: ${e.message}`);
+          }
+        }
+
         return card;
       }
       this.log(`A2A card invalid: missing name/skills`);
     } catch (e) {
       this.log(`A2A probe failed (${url}): ${e.message}`);
+    }
+    return null;
+  }
+
+  /**
+   * Get the platform's public key PEM for Agent Card signature verification.
+   * Fetches JWKS from token-service and caches for 1 hour.
+   * @private
+   */
+  async _getSigningPublicKey() {
+    // Check cache
+    if (this._jwksCache && this._jwksCacheExpiry > Date.now()) {
+      return this._jwksCache;
+    }
+
+    const tokenServiceUrl = process.env.TOKEN_SERVICE_URL || 'http://token-service:3000';
+    try {
+      const data = await this._get(`${tokenServiceUrl}/.well-known/jwks.json`, 3000);
+      const jwks = JSON.parse(data);
+      if (jwks.keys && jwks.keys.length > 0) {
+        const key = jwks.keys[0]; // Use first key
+        // Convert JWK to PEM using Node.js crypto
+        const keyObject = crypto.createPublicKey({ key, format: 'jwk' });
+        const pem = keyObject.export({ type: 'spki', format: 'pem' });
+        // Cache for 1 hour
+        this._jwksCache = pem;
+        this._jwksCacheExpiry = Date.now() + 3600000;
+        return pem;
+      }
+    } catch (e) {
+      this.log(`Failed to fetch JWKS for signature verification: ${e.message}`);
     }
     return null;
   }
@@ -901,12 +965,24 @@ class ProtocolScanner {
       .digest('hex')
       .slice(0, 16);
 
+    // Enhanced: hash tool descriptions to detect post-deployment poisoning
+    // that only changes descriptions (not tool names)
+    const toolDescriptionsHash = crypto.createHash('sha256')
+      .update(JSON.stringify(
+        (caps?._introspected_tools || [])
+          .map(t => ({ name: t.name, description: t.description || '' }))
+          .sort((a, b) => a.name.localeCompare(b.name))
+      ))
+      .digest('hex')
+      .slice(0, 16);
+
     // Check against known-good registry
     const registryEntry = MCP_KNOWN_GOOD_REGISTRY[serverName];
     if (!registryEntry) {
       return {
         status: 'unverified',
         fingerprint: capFingerprint,
+        toolDescriptionsHash,
         reason: `Server "${serverName}" not found in known-good registry`,
         registry_size: Object.keys(MCP_KNOWN_GOOD_REGISTRY).length,
       };
@@ -924,6 +1000,7 @@ class ProtocolScanner {
         return {
           status: 'outdated',
           fingerprint: capFingerprint,
+          toolDescriptionsHash,
           current_version: serverVersion,
           minimum_version: registryEntry.min_version,
           publisher: registryEntry.publisher,
@@ -935,8 +1012,158 @@ class ProtocolScanner {
     return {
       status: 'verified',
       fingerprint: capFingerprint,
+      toolDescriptionsHash,
       publisher: registryEntry.publisher,
       version: serverVersion,
+    };
+  }
+
+  // ═══════════════════════════════════════════════════════════════════════════
+  // MCP Server Rescan — Periodic fingerprint drift detection
+  // ═══════════════════════════════════════════════════════════════════════════
+
+  /**
+   * Rescan all active MCP servers, compute fingerprints, detect drift.
+   * @param {object} dbClient - Postgres client
+   * @returns {{ scanned: number, drifted: number, findings: object[] }}
+   */
+  async rescanMCPServers(dbClient) {
+    const results = { scanned: 0, drifted: 0, findings: [] };
+
+    let mcpServers;
+    try {
+      const res = await dbClient.query(
+        "SELECT id, name, metadata FROM workloads WHERE is_mcp_server = true AND status = 'active'"
+      );
+      mcpServers = res.rows;
+    } catch (e) {
+      this.log(`MCP rescan: DB query failed: ${e.message}`);
+      return results;
+    }
+
+    if (!mcpServers || mcpServers.length === 0) {
+      this.log('MCP rescan: no active MCP servers found');
+      return results;
+    }
+
+    for (const w of mcpServers) {
+      try {
+        const baseUrl = this._getUrl(w);
+        if (!baseUrl) continue;
+
+        // Re-probe the server
+        const caps = await this._probeMCP(baseUrl);
+        if (!caps) continue;
+
+        // Compute new fingerprint + descriptions hash
+        const integrity = this._verifyMCPIntegrity(caps.serverInfo || caps.result?.serverInfo, caps);
+        const newFingerprint = integrity.fingerprint;
+        const newDescHash = integrity.toolDescriptionsHash;
+        const toolNames = (caps._introspected_tools || []).map(t => t.name);
+
+        // Get previous fingerprint
+        let prevFingerprint = null;
+        let prevDescHash = null;
+        let prevToolNames = [];
+        try {
+          const fpRes = await dbClient.query(
+            'SELECT fingerprint, tool_descriptions_hash, tool_names FROM mcp_fingerprints WHERE workload_name = $1 ORDER BY created_at DESC LIMIT 1',
+            [w.name]
+          );
+          if (fpRes.rows.length > 0) {
+            prevFingerprint = fpRes.rows[0].fingerprint;
+            prevDescHash = fpRes.rows[0].tool_descriptions_hash;
+            prevToolNames = fpRes.rows[0].tool_names || [];
+          }
+        } catch { /* table may not exist yet */ }
+
+        // Compare
+        const driftDetected = prevFingerprint !== null && (
+          newFingerprint !== prevFingerprint || newDescHash !== prevDescHash
+        );
+
+        let driftDetails = null;
+        if (driftDetected) {
+          driftDetails = this._computeDriftDetails(prevToolNames, toolNames, prevDescHash, newDescHash);
+          results.drifted++;
+          results.findings.push({
+            type: 'mcp-capability-drift',
+            severity: 'high',
+            workload: w.name,
+            message: `MCP server "${w.name}" capabilities changed: ${driftDetails.summary}`,
+            owasp: 'NHI8',
+            drift_details: driftDetails,
+          });
+        }
+
+        // Store new fingerprint row
+        try {
+          await dbClient.query(
+            `INSERT INTO mcp_fingerprints (
+              workload_name, server_name, server_version, protocol_version,
+              fingerprint, tool_descriptions_hash, tool_count, tool_names,
+              resource_count, prompt_count, capabilities_snapshot,
+              previous_fingerprint, drift_detected, drift_details, scan_source
+            ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15)`,
+            [
+              w.name,
+              caps.serverInfo?.name || caps.result?.serverInfo?.name || w.name,
+              caps.serverInfo?.version || caps.result?.serverInfo?.version || null,
+              caps.protocolVersion || caps.result?.protocolVersion || null,
+              newFingerprint,
+              newDescHash,
+              toolNames.length,
+              toolNames,
+              (caps._introspected_resources || []).length,
+              (caps._introspected_prompts || []).length,
+              JSON.stringify({
+                tools: toolNames,
+                resources: (caps._introspected_resources || []).map(r => r.uri || r.name),
+                prompts: (caps._introspected_prompts || []).map(p => p.name),
+              }),
+              prevFingerprint,
+              driftDetected,
+              driftDetails ? JSON.stringify(driftDetails) : null,
+              'periodic',
+            ]
+          );
+        } catch (e) {
+          this.log(`MCP rescan: failed to store fingerprint for ${w.name}: ${e.message}`);
+        }
+
+        results.scanned++;
+      } catch (e) {
+        this.log(`MCP rescan: probe failed for ${w.name}: ${e.message}`);
+      }
+    }
+
+    this.log(`MCP rescan complete: ${results.scanned} scanned, ${results.drifted} drifted`);
+    return results;
+  }
+
+  /**
+   * Compute drift details between previous and current tool lists.
+   * @private
+   */
+  _computeDriftDetails(prevToolNames, newToolNames, prevDescHash, newDescHash) {
+    const prevSet = new Set(prevToolNames || []);
+    const newSet = new Set(newToolNames || []);
+
+    const added = [...newSet].filter(t => !prevSet.has(t));
+    const removed = [...prevSet].filter(t => !newSet.has(t));
+    const hasDescriptionChange = prevDescHash !== newDescHash && added.length === 0 && removed.length === 0;
+
+    const parts = [];
+    if (added.length > 0) parts.push(`${added.length} tool(s) added: ${added.join(', ')}`);
+    if (removed.length > 0) parts.push(`${removed.length} tool(s) removed: ${removed.join(', ')}`);
+    if (hasDescriptionChange) parts.push('tool descriptions changed (possible poisoning)');
+    if (parts.length === 0) parts.push('fingerprint changed');
+
+    return {
+      added,
+      removed,
+      hasDescriptionChange,
+      summary: parts.join('; '),
     };
   }
 
@@ -1006,16 +1233,37 @@ class ProtocolScanner {
     const id = `a2a:${w.id || w.name}`;
     const skills = card?.skills?.map(s => s.id || s.name) || [];
     const hasAuth = !!(card?.security?.length || card?.securitySchemes);
-    const isSigned = !!card?.signature;
+
+    // 4-state signature status: verified, invalid, unverified, unsigned
+    let signatureStatus = 'unsigned';
+    let signatureKid = null;
+    if (card?.signature) {
+      if (card._signatureVerified?.valid) {
+        signatureStatus = 'verified';
+        signatureKid = card._signatureVerified.kid;
+      } else if (card._signatureVerified?.error === 'Could not fetch public key') {
+        signatureStatus = 'unverified';
+      } else if (card._signatureVerified) {
+        signatureStatus = 'invalid';
+      }
+    }
+
+    // Risk mapping: invalid → critical, unsigned → medium, unverified → medium, verified → low
+    let signatureRisk = 'medium';
+    if (signatureStatus === 'invalid') signatureRisk = 'critical';
+    else if (signatureStatus === 'verified') signatureRisk = 'low';
 
     this._add({
       id, label: card?.name || w.name,
       type: 'a2a-agent', group: 'agent-protocol', protocol: 'a2a',
       trust: w.trust_level || 'none',
-      risk: !hasAuth ? 'high' : !isSigned ? 'medium' : 'low',
+      risk: !hasAuth ? 'high' : signatureRisk,
       meta: {
         version: card?.version, description: card?.description,
-        skills, has_auth: hasAuth, is_signed: isSigned,
+        skills, has_auth: hasAuth,
+        is_signed: signatureStatus !== 'unsigned',
+        signature_status: signatureStatus,
+        signature_kid: signatureKid,
         transport: card?.supportedInterfaces?.[0]?.transport || 'https',
         url: card?.url || this._getUrl(w),
         detection: score.signals,
@@ -1024,7 +1272,13 @@ class ProtocolScanner {
 
     this._rel({ source: id, target: wNodeId, type: 'runs-as-protocol', protocol: 'a2a', discovered_by: 'A2A protocol probe', evidence: `Probed workload for /.well-known/agent.json (A2A Agent Card). Detection signals: ${(score.signals || []).join(', ')}. This workload implements the Google A2A protocol and can receive tasks from other agents.` });
 
-    if (!isSigned) {
+    if (signatureStatus === 'invalid') {
+      this.findings.push({
+        type: 'a2a-invalid-signature', severity: 'high', workload: w.name,
+        message: `A2A Agent "${card?.name || w.name}" has INVALID Agent Card signature. Card may have been tampered with.`,
+        owasp: 'NHI2',
+      });
+    } else if (signatureStatus === 'unsigned') {
       this.findings.push({
         type: 'a2a-unsigned-card', severity: 'medium', workload: w.name,
         message: `A2A Agent "${card?.name || w.name}" has unsigned Agent Card. Should use JWS for authenticity.`,

@@ -825,6 +825,51 @@ function mountGraphRoutes(app, dbClient) {
       res.status(500).json({ error: error.message });
     }
   });
+
+  // ── MCP Fingerprint Query Endpoints ──
+
+  // GET /api/v1/mcp/fingerprints — Fingerprint history with drift filter
+  app.get('/api/v1/mcp/fingerprints', async (req, res) => {
+    try {
+      const { workload, server, drift_only, since, limit: rawLimit } = req.query;
+      let q = 'SELECT * FROM mcp_fingerprints WHERE 1=1';
+      const p = []; let i = 1;
+
+      if (workload) { q += ` AND LOWER(workload_name) LIKE $${i}`; p.push(`%${workload.toLowerCase()}%`); i++; }
+      if (server) { q += ` AND LOWER(server_name) LIKE $${i}`; p.push(`%${server.toLowerCase()}%`); i++; }
+      if (drift_only === 'true') { q += ' AND drift_detected = TRUE'; }
+      if (since) { q += ` AND created_at > $${i}`; p.push(since); i++; }
+
+      q += ` ORDER BY created_at DESC LIMIT $${i}`;
+      p.push(Math.min(parseInt(rawLimit) || 100, 500));
+
+      const r = await dbClient.query(q, p);
+      res.json({ total: r.rows.length, fingerprints: r.rows });
+    } catch (e) {
+      if (e.message?.includes('does not exist')) {
+        return res.json({ total: 0, fingerprints: [], note: 'mcp_fingerprints table not yet created' });
+      }
+      res.status(500).json({ error: e.message });
+    }
+  });
+
+  // GET /api/v1/mcp/fingerprints/:workloadName/drift — Drift events for a specific server
+  app.get('/api/v1/mcp/fingerprints/:workloadName/drift', async (req, res) => {
+    try {
+      const r = await dbClient.query(
+        `SELECT * FROM mcp_fingerprints
+         WHERE workload_name = $1 AND drift_detected = TRUE
+         ORDER BY created_at DESC LIMIT 50`,
+        [req.params.workloadName]
+      );
+      res.json({ workload: req.params.workloadName, total: r.rows.length, drift_events: r.rows });
+    } catch (e) {
+      if (e.message?.includes('does not exist')) {
+        return res.json({ workload: req.params.workloadName, total: 0, drift_events: [], note: 'mcp_fingerprints table not yet created' });
+      }
+      res.status(500).json({ error: e.message });
+    }
+  });
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -2016,6 +2061,54 @@ const CONTROL_CATALOG = {
       template_id: 'ai-endpoint-auth',
     },
   ],
+  'mcp-capability-drift': [
+    {
+      id: 'mcp-drift-investigate',
+      name: 'Investigate Capability Change',
+      description: 'MCP server capabilities changed since last scan. Investigate whether the change was authorized and review all tool invocations since the change.',
+      action_type: 'investigate',
+      remediation_type: 'process',
+      path_break: { edge_position: 'entry', edges_severed: 0, crown_jewel_proximity: 0.5 },
+      feasibility: { preconditions: [], effort: 'hours', automated: false },
+      operational: { implementation: 3, ongoing_toil: 2, expertise: 'medium' },
+      template_id: null,
+    },
+    {
+      id: 'mcp-drift-pin-version',
+      name: 'Pin MCP Server Version',
+      description: 'Pin the MCP server to a specific known-good version to prevent unauthorized capability changes.',
+      action_type: 'harden',
+      remediation_type: 'code_change',
+      path_break: { edge_position: 'entry', edges_severed: 1, crown_jewel_proximity: 0.7 },
+      feasibility: { preconditions: [], effort: 'hours', automated: true },
+      operational: { implementation: 2, ongoing_toil: 1, expertise: 'low' },
+      template_id: 'mcp-integrity-verification',
+    },
+  ],
+  'a2a-invalid-signature': [
+    {
+      id: 'a2a-investigate-invalid-sig',
+      name: 'Investigate Tampered Card',
+      description: 'Agent Card cryptographic signature is invalid — the card content may have been tampered with. Audit the agent and its deployment.',
+      action_type: 'investigate',
+      remediation_type: 'process',
+      path_break: { edge_position: 'entry', edges_severed: 0, crown_jewel_proximity: 0.8 },
+      feasibility: { preconditions: [], effort: 'hours', automated: false },
+      operational: { implementation: 3, ongoing_toil: 1, expertise: 'medium' },
+      template_id: null,
+    },
+    {
+      id: 'a2a-block-invalid-sig',
+      name: 'Block Invalid Signatures',
+      description: 'Deploy policy to deny task delegation to A2A agents with invalid or missing signatures.',
+      action_type: 'policy',
+      remediation_type: 'policy',
+      path_break: { edge_position: 'entry', edges_severed: 2, crown_jewel_proximity: 0.9 },
+      feasibility: { preconditions: ['policy-engine-deployed'], effort: 'hours', automated: true },
+      operational: { implementation: 1, ongoing_toil: 0, expertise: 'low' },
+      template_id: 'a2a-agent-card-signing',
+    },
+  ],
 };
 
 function scoreControls(attackPath, allNodes, allRels) {
@@ -3022,6 +3115,8 @@ const FINDING_TYPE_DEFAULTS = {
   'shadow-ai-usage': { label: 'Shadow AI Usage', description: 'Workload calling AI APIs without governance approval. Register usage and apply rate limiting.', severity: 'high', category: 'governance' },
   'ai-permission-without-workload': { label: 'AI Permission Without Workload', description: 'Identity has AI platform permissions but no registered AI workload. Audit and revoke if unused.', severity: 'medium', category: 'access' },
   'public-ai-endpoint': { label: 'Public AI Endpoint', description: 'AI inference endpoint publicly accessible. Restrict to VPC-only and enforce authentication.', severity: 'critical', category: 'network' },
+  'mcp-capability-drift': { label: 'MCP Capability Drift', description: 'MCP server capabilities changed since last scan — tools added, removed, or descriptions modified. Investigate for supply-chain tampering.', severity: 'high', category: 'supply-chain' },
+  'a2a-invalid-signature': { label: 'A2A Invalid Signature', description: 'A2A Agent Card has an invalid cryptographic signature. Card may have been tampered with. Investigate immediately.', severity: 'high', category: 'access' },
 };
 
 // =============================================================================

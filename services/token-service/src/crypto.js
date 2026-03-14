@@ -204,11 +204,32 @@ function _reset() {
   _jwks = null;
 }
 
+/**
+ * Get the private key PEM. Returns null for HS256 mode.
+ * Used by agent-card-signer for signing Agent Cards.
+ * @returns {string|null}
+ */
+function getPrivateKeyPem() {
+  init();
+  return _algorithm === 'ES256' ? _privateKey : null;
+}
+
+/**
+ * Get the public key PEM. Returns null for HS256 mode.
+ * @returns {string|null}
+ */
+function getPublicKeyPem() {
+  init();
+  return _algorithm === 'ES256' ? _publicKey : null;
+}
+
 module.exports = {
   signToken,
   verifyToken,
   getJWKS,
   getAlgorithm,
   getKid,
+  getPrivateKeyPem,
+  getPublicKeyPem,
   _reset,
 };
