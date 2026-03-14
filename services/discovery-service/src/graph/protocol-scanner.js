@@ -1274,22 +1274,37 @@ class ProtocolScanner {
 
     if (signatureStatus === 'invalid') {
       this.findings.push({
-        type: 'a2a-invalid-signature', severity: 'high', workload: w.name,
-        message: `A2A Agent "${card?.name || w.name}" has INVALID Agent Card signature. Card may have been tampered with.`,
+        id: `a2a-invalid-signature:${w.name}`,
+        finding_type: 'a2a-invalid-signature', type: 'a2a-invalid-signature',
+        title: `Invalid Agent Card Signature — ${card?.name || w.name}`,
+        severity: 'high', workload: w.name,
+        description: `A2A Agent "${card?.name || w.name}" has INVALID Agent Card signature. Card may have been tampered with.`,
+        recommendation: 'Investigate whether the Agent Card has been tampered with. Re-sign the card using POST /api/v1/agent-card/sign on the token-service.',
         owasp: 'NHI2',
+        entry_points: [w.name],
       });
     } else if (signatureStatus === 'unsigned') {
       this.findings.push({
-        type: 'a2a-unsigned-card', severity: 'medium', workload: w.name,
-        message: `A2A Agent "${card?.name || w.name}" has unsigned Agent Card. Should use JWS for authenticity.`,
+        id: `a2a-unsigned-card:${w.name}`,
+        finding_type: 'a2a-unsigned-card', type: 'a2a-unsigned-card',
+        title: `Unsigned Agent Card — ${card?.name || w.name}`,
+        severity: 'medium', workload: w.name,
+        description: `A2A Agent "${card?.name || w.name}" serves an unsigned Agent Card. Without cryptographic signing, the card's authenticity cannot be verified.`,
+        recommendation: 'Sign the Agent Card using the platform token-service: set TOKEN_SERVICE_URL env var and the agent will auto-sign on startup. Or call POST /api/v1/agent-card/sign with the card payload.',
         owasp: 'NHI2',
+        entry_points: [w.name],
       });
     }
     if (!hasAuth) {
       this.findings.push({
-        type: 'a2a-no-auth', severity: 'high', workload: w.name,
-        message: `A2A Agent "${card?.name || w.name}" accepts tasks without authentication.`,
+        id: `a2a-no-auth:${w.name}`,
+        finding_type: 'a2a-no-auth', type: 'a2a-no-auth',
+        title: `No Authentication — ${card?.name || w.name}`,
+        severity: 'high', workload: w.name,
+        description: `A2A Agent "${card?.name || w.name}" accepts tasks without authentication. Any agent can invoke it.`,
+        recommendation: 'Add authentication to the Agent Card security section. Configure bearer token or OAuth2 authentication.',
         owasp: 'NHI2',
+        entry_points: [w.name],
       });
     }
   }

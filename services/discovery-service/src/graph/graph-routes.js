@@ -2354,7 +2354,9 @@ async function buildGraph(dbClient) {
     const graph = await scanner.discover(providerWorkloads, provider);
     allNodes.push(...graph.nodes);
     allRels.push(...graph.relationships);
-    allPaths.push(...graph.attack_paths);
+    allPaths.push(...(graph.attack_paths || []));
+    // Scanner findings (a2a-unsigned-card, a2a-invalid-signature, etc.)
+    if (graph.findings?.length) allPaths.push(...graph.findings);
   }
 
   // ═══════════════════════════════════════════════════════════════════════
@@ -2571,6 +2573,13 @@ async function buildGraph(dbClient) {
 
       // Attach full metadata so the frontend can display captured resource details
       node.metadata = meta;
+
+      // Merge protocol-scanner fields into metadata (scanner stores in node.meta)
+      if (node.meta) {
+        if (node.meta.signature_status) node.metadata.signature_status = node.meta.signature_status;
+        if (node.meta.signature_kid) node.metadata.signature_kid = node.meta.signature_kid;
+        if (node.meta.is_signed !== undefined) node.metadata.is_signed = node.meta.is_signed;
+      }
 
       // Preserve AI enrichment from protocol-scanner (fixes Bug 1 frontend gap)
       if (!node.ai_enrichment && meta.ai_enrichment) {
