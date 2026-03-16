@@ -1,4 +1,4 @@
-# Workload Identity Director (WID)
+# Workload Identity Defense (WID) Platform
 
 ### The Identity Security Platform for Non-Human Identities and AI Agents
 

@@ -112,15 +112,43 @@ Manages SPIFFE-bound short-lived tokens. Tracks token chains via `token_chain` t
 
 **Port**: 3002 | **Role**: Multi-provider secret management
 
-Pluggable providers: Vault, AWS Secrets Manager, GCP Secret Manager, Azure Key Vault, 1Password. Credential rotation lifecycle tracking. Dynamic credential issuance with scope constraints.
+Pluggable providers with automatic failover by priority. All providers support full CRUD + rotation + revocation.
+
+| Provider | Config Env | Operations | Notes |
+|----------|-----------|------------|-------|
+| HashiCorp Vault | `VAULT_ADDR`, `VAULT_TOKEN` | CRUD, rotate, revoke, list, dynamic secrets | KV v1/v2, lease management |
+| AWS Secrets Manager | `AWS_REGION`, `AWS_ACCESS_KEY_ID` | CRUD, rotate, revoke, list | IAM role fallback, Lambda rotation |
+| GCP Secret Manager | `GCP_PROJECT_ID` | CRUD, rotate, revoke, list | Application Default Credentials |
+| Azure Key Vault | `AZURE_KEYVAULT_URL` | CRUD, rotate, revoke, list | Managed Identity via DefaultAzureCredential |
+| 1Password | `OP_CONNECT_HOST`, `OP_CONNECT_TOKEN` | Read-only | Connect server integration |
+
+**Auto-rotation**: Configurable intervals per secret (30d, 90d, custom). Rotation events logged to `credential_rotations` table with audit trail.
+
+**Key endpoints**:
+- `POST /api/v1/credentials/rotate` — Trigger rotation for specific secret path
+- `GET /api/v1/credentials/rotation-status` — Rotation schedule and last rotation times
+- `GET /api/v1/providers` — Active providers with health status
 
 ### 2.5 Relay Service (`services/relay-service/`)
 
 **Port**: 3005 | **Role**: Hub-spoke federation bridge
 
-- **Hub mode** (GCP central): Receives registrations from spoke relays, serves policy bundles, accepts audit event batches, tracks environment health
-- **Spoke mode** (Docker/AWS): Pulls policies every 15s, caches in memory, serves local edge gateways, buffers audit events and flushes upstream every 5s, sends heartbeats every 60s
+- **Hub mode** (GCP central): Receives registrations from spoke relays, serves policy bundles, accepts audit event batches, tracks environment health. DB-backed relay registry (`spoke_relays` table).
+- **Spoke mode** (Docker/AWS/Azure): Pulls policies every 15s, caches in memory, serves local edge gateways, buffers audit events and flushes upstream every 5s, sends heartbeats every 60s
+- **mTLS Federation** (ADR-13): Relay authenticates to hub via SPIFFE X.509 SVID (mTLS) with API key fallback. Cert auto-rotation via file watcher. Webhook listener for urgent policy push notifications.
 - **Delegation** (`/api/v1/delegation/*`): Initiate/extend delegation chains across environments
+
+**Federation API** (mounted on policy-sync-service, hub side):
+
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| POST | `/api/v1/federation/register` | Register relay with cert validation |
+| POST | `/api/v1/federation/heartbeat` | Heartbeat with cert fingerprint verification |
+| POST | `/api/v1/federation/revoke/:relayId` | Revoke a spoke relay |
+| GET | `/api/v1/federation/relays` | List relays with cert status + health |
+| GET | `/api/v1/federation/events` | Federation audit log |
+| POST | `/api/v1/federation/push` | Broadcast policy push to active relays |
+| POST | `/api/v1/federation/bootstrap-cert` | Issue client cert (bootstrap flow) |
 
 ### 2.6 Edge Gateway (`services/edge-gateway/`)
 
@@ -366,7 +394,62 @@ This is the table that creates data gravity. Every request through the edge gate
 
 ---
 
-## 7. Security Model
+## 7. Multi-Tenancy
+
+### Tenant Data Model
+
+```sql
+tenants: id, name, slug, plan (trial|team|enterprise), region (us|eu|ap),
+         data_residency_mode (relaxed|strict), settings JSONB, created_at, updated_at
+
+tenant_memberships: id, tenant_id, user_id, role (owner|admin|operator|viewer),
+                    invited_by, accepted_at, created_at
+```
+
+All 25+ data tables have `tenant_id UUID NOT NULL REFERENCES tenants(id)` with RLS.
+
+### Three-Layer Isolation
+
+| Layer | Mechanism |
+|-------|-----------|
+| PostgreSQL RLS | `CREATE POLICY tenant_isolation ON <table> USING (tenant_id = current_setting('app.current_tenant')::uuid)` |
+| Tenant middleware | Extracts `tenantId` from JWT, runs `SET LOCAL app.current_tenant` on each pooled connection |
+| Scoped caches | All cache keys prefixed `tenant:{tenantId}:` — policy, graph, relay caches |
+
+### Registration + Invitation Flow
+
+1. First user registers -> tenant created (user becomes `owner`)
+2. Owner invites via `/api/v1/tenants/:id/invite` -> `tenant_memberships` row, `accepted_at = NULL`
+3. User accepts invite -> `accepted_at` set, tenant appears in user's tenant list
+4. Users can belong to multiple tenants; switch via `X-Tenant-Id` header or tenant picker
+
+### Data Sovereignty
+
+| Mode | Behavior |
+|------|----------|
+| `relaxed` | Data in primary region, replicated globally |
+| `strict` | Queries rejected if wrong region. Spoke relays tagged by region. Audit events only same-region spokes |
+
+Spoke-local storage available for sovereign deployments (hub receives metadata only).
+
+### Tenant API Endpoints
+
+| Method | Path | Purpose |
+|--------|------|---------|
+| POST | `/api/v1/tenants` | Create tenant |
+| GET | `/api/v1/tenants/:id` | Get tenant details |
+| PUT | `/api/v1/tenants/:id` | Update settings |
+| POST | `/api/v1/tenants/:id/invite` | Invite user |
+| GET | `/api/v1/tenants/:id/members` | List members |
+| PUT | `/api/v1/tenants/:id/members/:userId` | Update role |
+| DELETE | `/api/v1/tenants/:id/members/:userId` | Remove member |
+| POST | `/api/v1/tenants/switch` | Switch active tenant |
+
+See [ADR-12](ADR-12-multi-tenancy.md) for full design rationale and threat model.
+
+---
+
+## 8. Security Model
 
 | Layer | Mechanism |
 |-------|-----------|
@@ -381,7 +464,7 @@ This is the table that creates data gravity. Every request through the edge gate
 
 ---
 
-## 8. Test Coverage
+## 9. Test Coverage
 
 | Service | Tests | Framework | Status |
 |---------|-------|-----------|--------|
@@ -397,7 +480,7 @@ This is the table that creates data gravity. Every request through the edge gate
 
 ---
 
-## 9. Live Deployment
+## 10. Live Deployment
 
 ### GCP Central (Production)
 

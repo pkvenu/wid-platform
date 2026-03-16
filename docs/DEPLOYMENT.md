@@ -1,11 +1,11 @@
-# Workload Identity Platform — Deployment Guide
+# Workload Identity Defense (WID) Platform — Deployment Guide
 
 ## Architecture Overview
 
 ```
 ┌─────────────────────────────────────────────────────────────────┐
 │                        WEB UI (:3100)                           │
-│                 Workload Identity Manager                       │
+│                 Workload Identity Defense                       │
 └──────────┬────────────────┬────────────────┬────────────────────┘
            │                │                │
     ┌──────▼──────┐  ┌──────▼──────┐  ┌──────▼──────┐
@@ -325,6 +325,192 @@ DEFAULT_FAIL_BEHAVIOR=closed  # deny if policy engine is unreachable
 
 ---
 
+## 5. Spoke mTLS Federation Setup
+
+Spokes (relay services in remote environments) authenticate to the hub using mutual TLS.
+Three options in order of preference:
+
+### Prerequisites
+
+- `openssl` 1.1+ (all options)
+- SPIRE 1.8+ (Option A only)
+
+### Option A: SPIRE-Based (Recommended)
+
+If your environment already runs SPIRE, configure the SPIRE agent to issue SVIDs for the relay workload.
+
+1. **Register the relay entry** with the SPIRE server:
+
+```bash
+spire-server entry create \
+  -spiffeID spiffe://wid-platform/relay/<env-name> \
+  -parentID spiffe://wid-platform/agent/<node-id> \
+  -selector k8s:pod-label:app=wid-relay   # or unix:uid, docker:label, etc.
+```
+
+2. **Point relay env vars at the SPIRE agent socket**:
+
+```bash
+RELAY_CERT_PATH=/run/spire/agent/sockets/svid.pem
+RELAY_KEY_PATH=/run/spire/agent/sockets/svid_key.pem
+RELAY_CA_BUNDLE_PATH=/run/spire/agent/sockets/bundle.pem
+RELAY_SPIFFE_ID=spiffe://wid-platform/relay/<env-name>
+```
+
+The relay will auto-rotate certs via the SPIRE Workload API.
+
+### Option B: Bootstrap Flow (Without SPIRE)
+
+Use the built-in federation CA for environments without SPIRE.
+
+**Step 1 — Generate Federation CA:**
+
+```bash
+deploy/certs/generate-federation-ca.sh
+# Outputs: federation-ca.key, federation-ca.crt (valid 5 years)
+```
+
+**Step 2 — Deploy CA to the hub:**
+
+```bash
+# On the hub (policy-sync-service)
+export FEDERATION_CA_KEY_PATH=/etc/wid/certs/federation-ca.key
+export FEDERATION_CA_CERT_PATH=/etc/wid/certs/federation-ca.crt
+```
+
+**Step 3 — Generate relay cert:**
+
+```bash
+# Option 1: CLI flag during install
+deploy/install.sh --with-relay-cert --env-name staging --hub-url https://hub.wid.example.com
+
+# Option 2: API call (requires bootstrap token)
+curl -X POST https://hub.wid.example.com/api/v1/federation/bootstrap \
+  -H "Authorization: Bearer $FEDERATION_BOOTSTRAP_TOKEN" \
+  -d '{"envName": "staging"}' \
+  -o relay-certs.json
+```
+
+**Step 4 — Configure relay env vars:**
+
+```bash
+RELAY_CERT_PATH=/etc/wid/certs/relay.pem
+RELAY_KEY_PATH=/etc/wid/certs/relay-key.pem
+RELAY_CA_BUNDLE_PATH=/etc/wid/certs/federation-ca.crt
+RELAY_SPIFFE_ID=spiffe://wid-platform/relay/staging
+```
+
+### Option C: API Key Fallback
+
+For dev/test environments where mTLS is not required:
+
+```bash
+CENTRAL_API_KEY=<your-api-key>
+```
+
+No certificate configuration needed. The relay authenticates via the `X-API-Key` header.
+This is the existing behavior and is **not recommended for production**.
+
+### Verification
+
+After configuring mTLS, verify federation status:
+
+```bash
+# List connected relays and their mTLS status
+curl -s https://hub.wid.example.com/api/v1/federation/relays \
+  -H "Cookie: token=<admin-jwt>" | jq .
+
+# Check recent federation events (cert rotations, handshakes)
+curl -s https://hub.wid.example.com/api/v1/federation/events \
+  -H "Cookie: token=<admin-jwt>" | jq .
+
+# Health endpoint includes mTLS section
+curl -s https://hub.wid.example.com/health | jq '.mtls'
+# Expected: { "enabled": true, "activeCerts": 1, "caExpiry": "2031-..." }
+```
+
+---
+
+## 6. Azure Spoke Deployment (Container Apps)
+
+### Prerequisites
+- Azure CLI (`az`) installed and logged in
+- Terraform 1.5+
+- Docker (for building images)
+
+### Deploy with Terraform
+
+```bash
+cd deploy/azure/terraform/spoke
+
+# Initialize
+terraform init
+
+# Review plan
+terraform plan \
+  -var="environment_name=azure-eastus" \
+  -var="central_url=http://34.120.74.81" \
+  -var="azure_region=eastus"
+
+# Apply
+terraform apply
+```
+
+This creates:
+- Resource Group with VNET (10.2.0.0/16) + Container Apps subnet
+- User-Assigned Managed Identity (AcrPull + Key Vault Secrets User)
+- Azure Container Registry (image scanning enabled)
+- Azure Key Vault (secrets stored securely, accessed via MI)
+- Container Apps Environment (integrated with VNET + Log Analytics)
+- Relay container app (spoke mode, mTLS + webhook ready)
+- N edge-gateway container apps (one per workload config)
+- Azure Monitor alert rules (relay health, container restarts, memory)
+
+### Build and Push Images
+
+```bash
+# Login to ACR (use the ACR name from terraform output)
+ACR=$(terraform output -raw acr_login_server)
+az acr login --name $(terraform output -raw acr_login_server | cut -d. -f1)
+
+# Build and push from project root
+docker build --platform linux/amd64 -t $ACR/relay-service:latest -f services/relay-service/Dockerfile .
+docker push $ACR/relay-service:latest
+
+docker build --platform linux/amd64 -t $ACR/edge-gateway:latest -f services/edge-gateway/Dockerfile .
+docker push $ACR/edge-gateway:latest
+
+# Force container restart
+az containerapp revision restart --name $(terraform output -raw relay_app_name) \
+  --resource-group $(terraform output -raw resource_group_name)
+```
+
+### Verify
+
+```bash
+# Relay health
+curl -s https://$(terraform output -raw relay_fqdn)/health | jq .
+
+# Check federation registration at hub
+curl -s http://34.120.74.81/api/v1/federation/relays | jq .
+
+# Gateway health (example for servicenow gateway)
+curl -s https://$(terraform output -json gateway_urls | jq -r '.servicenow')/health | jq .
+```
+
+### Key Differences from AWS Spoke
+
+| Aspect | AWS (ECS Fargate) | Azure (Container Apps) |
+|--------|-------------------|------------------------|
+| Auth | IAM roles | Managed Identity |
+| Secrets | Secrets Manager | Key Vault |
+| Networking | VPC + NAT + ALB | VNET + Container Apps ingress |
+| Registry | ECR | ACR |
+| Monitoring | CloudWatch | Log Analytics + Monitor Alerts |
+| Scaling | ECS service count | Container Apps min/max replicas |
+
+---
+
 ## Environment Variables
 
 ### ext-authz Adapter
@@ -354,6 +540,21 @@ DEFAULT_FAIL_BEHAVIOR=closed  # deny if policy engine is unreachable
 | `APP_PORT` | `8080` | Local app port |
 | `DEFAULT_MODE` | `audit` | `audit`, `enforce`, or `passthrough` |
 | `FAIL_BEHAVIOR` | `open` | `open` or `closed` |
+
+### Relay Service (mTLS)
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `RELAY_CERT_PATH` | — | Path to relay TLS certificate (PEM) |
+| `RELAY_KEY_PATH` | — | Path to relay TLS private key (PEM) |
+| `RELAY_CA_BUNDLE_PATH` | — | Path to CA bundle for verifying the hub |
+| `RELAY_SPIFFE_ID` | — | SPIFFE ID for this relay (e.g. `spiffe://wid-platform/relay/staging`) |
+| `WEBHOOK_ENABLED` | `false` | Enable webhook listener for push-based policy updates |
+| `WEBHOOK_PORT` | `8443` | Port for the webhook HTTPS listener |
+| `FEDERATION_PUSH_SECRET` | — | HMAC secret for validating hub-pushed events |
+| `FEDERATION_CA_KEY_PATH` | — | (Hub only) Path to federation CA private key |
+| `FEDERATION_CA_CERT_PATH` | — | (Hub only) Path to federation CA certificate |
+| `FEDERATION_BOOTSTRAP_TOKEN` | — | One-time token for relay cert bootstrap (Option B) |
 
 ---
 

@@ -6,7 +6,7 @@
 
 ## Introduction
 
-WID is an enterprise-grade Workload Identity platform that discovers, attests, and governs every non-human identity (NHI) across multi-cloud and hybrid infrastructure. It builds a live identity graph showing every workload, its credentials, the external APIs it calls, and the attack paths between them — then enforces policy at the edge without requiring a service mesh.
+WID is an enterprise-grade Workload Identity Defense platform that discovers, attests, and governs every non-human identity (NHI) across multi-cloud and hybrid infrastructure. It builds a live identity graph showing every workload, its credentials, the external APIs it calls, and the attack paths between them — then enforces policy at the edge without requiring a service mesh.
 
 For market positioning and competitive analysis, see [STRATEGY.md](STRATEGY.md). For algorithms and scoring logic, see [ARCHITECTURE-DEEP-DIVE.md](ARCHITECTURE-DEEP-DIVE.md). For API reference, see [SPEC.md](SPEC.md).
 
@@ -179,7 +179,7 @@ One fix to `@wid/core` applies to both modes simultaneously.
 
 ## Hub-and-Spoke Federation
 
-WID uses a hub-and-spoke architecture for multi-environment deployment. The hub (control plane) runs centrally. Spokes (relay + gateways) run in each customer environment.
+WID uses a hub-and-spoke architecture for multi-environment deployment. The hub (control plane) runs centrally. Spokes (relay + gateways) run in each customer environment. Relays authenticate to the hub via SPIFFE X.509 SVIDs (mTLS), with API key fallback for environments where certificate infrastructure is not yet deployed.
 
 ```
                     ┌─── GCP Cloud Run (CENTRAL HUB) ───┐
@@ -195,6 +195,7 @@ WID uses a hub-and-spoke architecture for multi-environment deployment. The hub 
        │ AWS Spoke   │     │ Docker Spoke│     │ Azure Spoke │
        │ ECS Fargate │     │ Compose     │     │ Container   │
        │ relay + GWs │     │ relay + GWs │     │ Apps + GWs  │
+       │ (Terraform) │     │             │     │ MI + VNET   │
        └─────────────┘     └─────────────┘     └─────────────┘
 ```
 
@@ -205,6 +206,13 @@ WID uses a hub-and-spoke architecture for multi-environment deployment. The hub 
 | Policy sync | Hub → Spoke (pull) | 15 seconds | Signed policy bundles with version hash |
 | Audit events | Spoke → Hub (push) | 5 seconds | Batch-flushed decision logs |
 | Heartbeats | Spoke → Hub | 60 seconds | Environment health, gateway count, last sync |
+| Webhook policy push | Hub → Spoke (push) | On change | Instant policy delivery via webhook; spokes still pull as fallback |
+
+### Federation Trust
+
+Each relay holds a SPIFFE X.509 SVID issued by the platform's trust domain CA. On connection, the hub verifies the relay's certificate chain via mTLS and extracts its SPIFFE ID (`spiffe://wid-platform/relay/<environment>`). This provides per-relay cryptographic identity without shared secrets. Relays that cannot yet provision certificates fall back to `CENTRAL_API_KEY` header auth. Stale relay entries are automatically removed after 5 minutes without a heartbeat.
+
+Cross-environment trace linking is supported: every audit event and policy decision carries a `trace_id` that spans hub and spoke boundaries, enabling full decision replay across federated deployments.
 
 ### Offline Resilience
 
@@ -386,6 +394,8 @@ Framework (SOC 2 / PCI DSS / NIST / ISO / EU AI Act)
 | ADR-09 | Remediation Decision Framework | 6-category taxonomy, decision routing, approval tiers |
 | ADR-10 | ES256 for workload tokens | Asymmetric signing. Only token-service holds private key. JWKS for verification |
 | ADR-11 | MCP Runtime Auditing + Agent Card Signing | Zero-copy tee, async parse. Tool argument values redacted by default |
+| ADR-12 | Multi-Tenancy via Shared Schema + RLS | Shared DB, shared schema, PostgreSQL RLS + tenant middleware + scoped caches |
+| ADR-13 | mTLS Federation with SPIFFE SVIDs | Per-relay cryptographic identity, cert-based auth, webhook push, cross-env trace linking. API key fallback |
 
 ---
 

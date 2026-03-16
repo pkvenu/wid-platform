@@ -1,5 +1,5 @@
 -- ==============================================================================
--- Workload Identity Platform - Database Schema
+-- Workload Identity Defense (WID) Platform - Database Schema
 -- ==============================================================================
 
 -- Workload Registry

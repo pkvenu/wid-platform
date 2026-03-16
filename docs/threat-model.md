@@ -1,7 +1,7 @@
 # WID Platform — Threat Model
 
 > Version 1.0 | March 2026
-> STRIDE-per-element analysis of the Workload Identity platform.
+> STRIDE-per-element analysis of the Workload Identity Defense platform.
 
 ---
 

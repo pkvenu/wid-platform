@@ -157,14 +157,21 @@
 ## P2 — Production Readiness
 
 ### 2.1 Multi-Tenancy
-**Status**: Not started
-**Files**: All DB queries, `init.sql`, middleware
-**Description**: Add `tenant_id` to all tables. Row-Level Security (RLS) in PostgreSQL. Tenant onboarding flow.
-**Acceptance Criteria**:
-- [ ] All tables have `tenant_id` column with RLS policies
-- [ ] Tenant isolation verified (tenant A cannot see tenant B's data)
-- [ ] Tenant onboarding creates isolated namespace
-- [ ] API routes respect tenant context from JWT
+**Status**: DONE (deployed March 15, 2026)
+**Files**: `init.sql`, `tenant-middleware.js`, `routes.js`, `auth-routes.js`, all service DB query modules
+**Description**: Shared database, shared schema with PostgreSQL RLS + application-layer tenant middleware + tenant-scoped caches. Three defense layers. See [ADR-12](ADR-12-multi-tenancy.md).
+**What was built**:
+- [x] `tenants` and `tenant_memberships` tables with registration + invitation flow
+- [x] All 25+ data tables have `tenant_id NOT NULL` column with RLS policies
+- [x] Tenant middleware extracts `tenantId` from JWT, sets `SET LOCAL app.current_tenant` on every DB connection
+- [x] `pg.Client` replaced with `pg.Pool` across all services
+- [x] All cache keys prefixed with `tenant:{tenantId}:` (policy cache, graph cache, relay cache)
+- [x] JWT includes `tenantId` and `tenantSlug` claims
+- [x] Relay registration includes tenant binding (spoke-to-tenant verified via mTLS + API key)
+- [x] Data sovereignty: region-tagged tenants, strict residency mode, spoke-local storage for sovereign deployments
+- [x] 20 threat categories covered (cross-tenant leakage, cache poisoning, JWT spoofing, IDOR, privilege escalation, etc.)
+- [x] Tenant API: create, update, invite, list members, switch context
+- [x] Existing single-tenant data migrated to default tenant on upgrade
 
 ### 2.2 Enterprise Auth (SSO)
 **Status**: Not started
@@ -176,12 +183,16 @@
 - [ ] Audit log for auth events
 
 ### 2.3 Secret Manager Integration
-**Status**: Credential broker exists but needs customer vault integration
-**Description**: Read/rotate credentials from customer vaults (HashiCorp Vault, AWS SM, GCP SM).
-**Acceptance Criteria**:
-- [ ] Credential broker connects to customer Vault instances
-- [ ] Auto-rotation policies for static credentials
-- [ ] Rotation events logged in `credential_rotations` table
+**Status**: DONE (deployed March 16, 2026)
+**Files**: `azure-provider.js`, `gcp-provider.js`, `aws-provider.js`, `vault-provider.js`, `scheduler.js`, `lifecycle-routes.js`, `004-credential-rotations.sql`
+**Description**: Read/rotate credentials from customer vaults (HashiCorp Vault, AWS SM, GCP SM, Azure KV).
+**What was built**:
+- [x] All 4 providers fully functional: Vault (KV v1/v2 + dynamic secrets), AWS SM, GCP SM, Azure KV
+- [x] All providers support: getSecret, putSecret, rotateSecret, revokeSecret, listSecrets, healthCheck
+- [x] Auto-rotation scheduler with configurable intervals per secret (30d, 90d, custom)
+- [x] Rotation events logged in `credential_rotations` table with audit trail
+- [x] API: rotate, rotation-status, providers list with health
+- [x] Provider priority with automatic failover
 
 ### 2.4 SIEM/SOAR Integration
 **Status**: Not started
@@ -207,24 +218,34 @@
 - [x] URL map updated for GCP load balancer routing
 
 ### 2.6 Production Hardening
-**Status**: Not started
-**Description**: Rate limiting, DDoS protection, WAF, encrypted audit logs, SOC 2 readiness.
-**Acceptance Criteria**:
-- [ ] Rate limiting on all public endpoints
-- [ ] Audit log encryption at rest
-- [ ] Security headers (CSP, HSTS, etc.)
-- [ ] Dependency vulnerability scanning in CI
+**Status**: DONE (deployed March 16, 2026)
+**Files**: `security-headers.js`, `rate-limit-middleware.js`, `005-audit-encryption.sql`, `.github/workflows/`, `core.js` (RateLimiter), `gateway.js`
+**Description**: Rate limiting, security headers, encrypted audit logs, CI security scanning.
+**What was built**:
+- [x] Security headers middleware (HSTS, CSP, X-Frame-Options, etc.) mounted on all 4 services
+- [x] Rate limiting middleware: 10 req/min per IP on auth, 300 req/min per tenant on API
+- [x] Per-tenant rate limiting at edge gateway with X-RateLimit-* response headers
+- [x] Audit log encryption at rest (pgcrypto, column-level on details/context blobs)
+- [x] GitHub Actions CI: npm audit, tests, container scanning (Trivy)
+- [x] Security headers: CSP, HSTS, nosniff, DENY framing, referrer policy, permissions policy
 
 ### 2.7 Multi-Cloud Spoke Hardening
-**Status**: Not started
+**Status**: Federation Trust + Azure Spoke DONE (March 16, 2026). Relay HA, Observability, AWS/GCP hardening remaining.
+**Files**: `tls-manager.js`, `trace-context.js`, `federation-routes.js`, `relay index.js`, `003-spoke-relays.sql`, `ADR-13`
 **Description**: Production-grade spoke deployments across AWS, GCP, and Azure. Current spokes work for demo but lack trust, HA, and observability.
 **Acceptance Criteria**:
 
-**Federation Trust (all clouds)**:
-- [ ] mTLS between spoke relay and central hub (SPIFFE SVIDs for relay identity)
-- [ ] Spoke identity verification on registration (hub validates relay certificate)
-- [ ] Cross-environment delegation chain linking (trace_id spans AWS→GCP hops)
-- [ ] Webhook/push-based policy updates (complement pull-based sync for urgent revocations)
+**Federation Trust (all clouds)** — DONE:
+- [x] mTLS between spoke relay and central hub (SPIFFE SVIDs for relay identity)
+- [x] Spoke identity verification on registration (hub validates relay certificate)
+- [x] Cross-environment delegation chain linking (trace_id spans AWS→GCP hops)
+- [x] Webhook/push-based policy updates (complement pull-based sync for urgent revocations)
+- [x] DB-backed relay registry (`spoke_relays` table, replaces in-memory Map)
+- [x] Federation audit trail (`federation_events` table)
+- [x] Certificate bootstrap flow for environments without SPIRE
+- [x] Automatic stale relay detection (5-min heartbeat timeout)
+- [x] Relay revocation API with cert fingerprint invalidation
+- [x] API key fallback for backward compatibility
 
 **Relay High Availability**:
 - [ ] Relay desired_count=2+ with health-based routing (AWS ALB, GCP LB)
@@ -249,11 +270,11 @@
 - [ ] Cloud SQL automated backups verified
 - [ ] Secret Manager rotation for DB credentials
 
-**Azure Spoke**:
-- [ ] Complete Container Apps Terraform (currently scaffolding only)
-- [ ] Azure Monitor integration
-- [ ] Managed Identity for relay (no stored credentials)
-- [ ] VNET integration for private connectivity
+**Azure Spoke** — DONE:
+- [x] Complete Container Apps Terraform (VNET, Managed Identity, Key Vault, Monitor)
+- [x] Azure Monitor integration (alert rules: relay health, container restarts, memory)
+- [x] Managed Identity for relay (no stored credentials — User-Assigned MI with AcrPull + KV access)
+- [x] VNET integration for private connectivity (10.2.0.0/16 with Container Apps subnet)
 
 ---
 
@@ -284,16 +305,26 @@
 **Description**: Production load balancer with custom domain, managed TLS.
 
 ### 3.4 Dashboard Stats Update After Enforce
-**Status**: Not started
-**Description**: Dashboard KPIs should update in real-time when policies are enforced.
+**Status**: DONE (deployed March 16, 2026)
+**Description**: Dashboard KPIs update in real-time via BroadcastChannel when policies are enforced. "Last updated" indicator. Poll interval reduced to 15s.
 
 ### 3.5 Graph Node Label Readability
-**Status**: Not started
-**Description**: Labels are hard to read at low zoom levels. Need adaptive sizing.
+**Status**: DONE (deployed March 16, 2026)
+**Description**: Adaptive font sizing (7-12px) based on zoom level. Smooth opacity fade-in. Dark halo stroke for contrast. Zoom-dependent label truncation.
 
 ### 3.6 Stale Relay Entries Cleanup
-**Status**: Not started
-**Description**: GCP hub accumulates relay entries on spoke restart. Need TTL-based cleanup.
+**Status**: DONE (March 16, 2026) — part of mTLS Federation (ADR-13)
+**Description**: 5-minute heartbeat timeout with automatic stale marking. Federation routes handle cleanup.
+
+### 3.7 Per-Tenant Rate Limiting at Gateway
+**Status**: DONE (deployed March 16, 2026)
+**Description**: Rate limiting at edge gateway level, keyed by tenant_id. Part of Production Hardening.
+**What was built**:
+- [x] Per-tenant request rate limits (configurable via env vars)
+- [x] Rate limit headers in responses (X-RateLimit-Limit, X-RateLimit-Remaining, X-RateLimit-Reset)
+- [x] 429 response with Retry-After when exceeded
+- [ ] 429 response with retry-after when exceeded
+- [ ] Gateway-level implementation (not per-service) for single enforcement point
 
 ---
 
@@ -323,3 +354,9 @@
 | P2.5 Compliance Policy Packs | 2026-03-11 | 5 frameworks, 68 controls, 125 templates mapped, one-click deploy, coverage dashboard |
 | Token Crypto Upgrade (HS256 → ES256) | 2026-03-13 | ECDSA P-256 asymmetric signing, JWKS endpoint, credential-broker uses validate endpoint, dual verification for migration (ADR-10) |
 | AWS Spoke Deployment | 2026-03-13 | ECS Fargate relay, Terraform module, federation with GCP hub verified |
+| Multi-Tenancy | 2026-03-15 | Shared schema + RLS + tenant middleware + scoped caches. 20 threat categories. Data sovereignty (ADR-12) |
+| mTLS Federation Trust | 2026-03-16 | SPIFFE SVID relay auth, TLSManager, cert bootstrap, webhook push, DB relay registry, cross-env trace linking, federation audit trail (ADR-13) |
+| Azure Spoke Hardening | 2026-03-16 | Managed Identity, VNET integration, Azure Key Vault, Azure Monitor alerts, mTLS env vars |
+| Secret Manager Integration | 2026-03-16 | All 4 providers complete (Vault, AWS SM, GCP SM, Azure KV), auto-rotation scheduler, credential_rotations table |
+| Production Hardening | 2026-03-16 | Security headers, rate limiting (control + data plane), audit encryption (pgcrypto), CI pipeline (GitHub Actions) |
+| Demo Polish | 2026-03-16 | Graph adaptive labels (7-12px + halo), Dashboard BroadcastChannel refresh, per-tenant gateway rate limiting |
