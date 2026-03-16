@@ -21,6 +21,21 @@ relay_memory   = "0.5Gi"
 gateway_cpu    = 0.25
 gateway_memory = "0.5Gi"
 
+# VNET integration (default: enabled)
+enable_vnet = true
+vnet_cidr   = "10.2.0.0/16"
+
+# Key Vault (default: enabled)
+enable_keyvault        = true
+federation_push_secret = ""  # Optional: federation push secret
+
+# Multi-tenancy
+tenant_id   = ""  # WID tenant ID
+data_region = ""  # Data sovereignty region
+
+# mTLS
+enable_mtls = false  # Enable mTLS cert paths for relay
+
 # Edge gateway configurations
 gateway_configs = {
   "servicenow" = {

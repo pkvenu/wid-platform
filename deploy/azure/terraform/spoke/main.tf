@@ -28,6 +28,16 @@ resource "azurerm_resource_group" "spoke" {
   tags     = local.common_tags
 }
 
+# ─── User-Assigned Managed Identity ────────────────────────────────────────────
+
+resource "azurerm_user_assigned_identity" "spoke" {
+  name                = "${local.name_prefix}-identity"
+  resource_group_name = azurerm_resource_group.spoke.name
+  location            = azurerm_resource_group.spoke.location
+
+  tags = local.common_tags
+}
+
 # ─── Container Registry ─────────────────────────────────────────────────────
 
 resource "azurerm_container_registry" "spoke" {
@@ -35,9 +45,104 @@ resource "azurerm_container_registry" "spoke" {
   resource_group_name = azurerm_resource_group.spoke.name
   location            = azurerm_resource_group.spoke.location
   sku                 = "Basic"
-  admin_enabled       = true
+  admin_enabled       = false
 
   tags = local.common_tags
+}
+
+# Grant AcrPull to the Managed Identity
+resource "azurerm_role_assignment" "acr_pull" {
+  scope                = azurerm_container_registry.spoke.id
+  role_definition_name = "AcrPull"
+  principal_id         = azurerm_user_assigned_identity.spoke.principal_id
+}
+
+# ─── VNET + Subnet (optional) ─────────────────────────────────────────────────
+
+resource "azurerm_virtual_network" "spoke" {
+  count               = var.enable_vnet ? 1 : 0
+  name                = "${local.name_prefix}-vnet"
+  resource_group_name = azurerm_resource_group.spoke.name
+  location            = azurerm_resource_group.spoke.location
+  address_space       = [var.vnet_cidr]
+
+  tags = local.common_tags
+}
+
+resource "azurerm_subnet" "container_apps" {
+  count                = var.enable_vnet ? 1 : 0
+  name                 = "${local.name_prefix}-cae-subnet"
+  resource_group_name  = azurerm_resource_group.spoke.name
+  virtual_network_name = azurerm_virtual_network.spoke[0].name
+  address_prefixes     = [cidrsubnet(var.vnet_cidr, 5, 0)]
+
+  delegation {
+    name = "container-apps-delegation"
+    service_delegation {
+      name    = "Microsoft.App/environments"
+      actions = ["Microsoft.Network/virtualNetworks/subnets/join/action"]
+    }
+  }
+}
+
+# ─── Azure Key Vault (optional) ───────────────────────────────────────────────
+
+data "azurerm_client_config" "current" {}
+
+resource "azurerm_key_vault" "spoke" {
+  count                      = var.enable_keyvault ? 1 : 0
+  name                       = "${var.project_name}-${var.environment}-spk-kv"
+  resource_group_name        = azurerm_resource_group.spoke.name
+  location                   = azurerm_resource_group.spoke.location
+  tenant_id                  = data.azurerm_client_config.current.tenant_id
+  sku_name                   = "standard"
+  soft_delete_retention_days = 7
+  purge_protection_enabled   = false
+
+  enable_rbac_authorization = true
+
+  network_acls {
+    default_action = "Allow"
+    bypass         = "AzureServices"
+  }
+
+  tags = local.common_tags
+}
+
+# Grant deployer (current principal) Key Vault Administrator
+resource "azurerm_role_assignment" "kv_admin" {
+  count                = var.enable_keyvault ? 1 : 0
+  scope                = azurerm_key_vault.spoke[0].id
+  role_definition_name = "Key Vault Administrator"
+  principal_id         = data.azurerm_client_config.current.object_id
+}
+
+# Grant Managed Identity "Key Vault Secrets User"
+resource "azurerm_role_assignment" "kv_secrets_user" {
+  count                = var.enable_keyvault ? 1 : 0
+  scope                = azurerm_key_vault.spoke[0].id
+  role_definition_name = "Key Vault Secrets User"
+  principal_id         = azurerm_user_assigned_identity.spoke.principal_id
+}
+
+# Store central API key in Key Vault
+resource "azurerm_key_vault_secret" "central_api_key" {
+  count        = var.enable_keyvault && var.central_api_key != "" ? 1 : 0
+  name         = "central-api-key"
+  value        = var.central_api_key
+  key_vault_id = azurerm_key_vault.spoke[0].id
+
+  depends_on = [azurerm_role_assignment.kv_admin]
+}
+
+# Store federation push secret in Key Vault
+resource "azurerm_key_vault_secret" "federation_push" {
+  count        = var.enable_keyvault && var.federation_push_secret != "" ? 1 : 0
+  name         = "federation-push-secret"
+  value        = var.federation_push_secret
+  key_vault_id = azurerm_key_vault.spoke[0].id
+
+  depends_on = [azurerm_role_assignment.kv_admin]
 }
 
 # ─── Log Analytics Workspace ────────────────────────────────────────────────
@@ -59,6 +164,7 @@ resource "azurerm_container_app_environment" "spoke" {
   resource_group_name        = azurerm_resource_group.spoke.name
   location                   = azurerm_resource_group.spoke.location
   log_analytics_workspace_id = azurerm_log_analytics_workspace.spoke.id
+  infrastructure_subnet_id   = var.enable_vnet ? azurerm_subnet.container_apps[0].id : null
 
   tags = local.common_tags
 }
@@ -72,6 +178,11 @@ resource "azurerm_container_app" "relay" {
   revision_mode                = "Single"
 
   tags = local.common_tags
+
+  identity {
+    type         = "UserAssigned"
+    identity_ids = [azurerm_user_assigned_identity.spoke.id]
+  }
 
   template {
     min_replicas = 1
@@ -120,6 +231,54 @@ resource "azurerm_container_app" "relay" {
         value = "60000"
       }
 
+      # ── mTLS + webhook env vars ──────────────────────────────────────
+      dynamic "env" {
+        for_each = var.enable_mtls ? [1] : []
+        content {
+          name  = "RELAY_CERT_PATH"
+          value = "/certs/relay.crt"
+        }
+      }
+      dynamic "env" {
+        for_each = var.enable_mtls ? [1] : []
+        content {
+          name  = "RELAY_KEY_PATH"
+          value = "/certs/relay.key"
+        }
+      }
+      dynamic "env" {
+        for_each = var.enable_mtls ? [1] : []
+        content {
+          name  = "RELAY_CA_BUNDLE_PATH"
+          value = "/certs/ca-bundle.crt"
+        }
+      }
+      env {
+        name  = "WEBHOOK_ENABLED"
+        value = "true"
+      }
+      env {
+        name  = "WEBHOOK_PORT"
+        value = "3006"
+      }
+
+      # ── Multi-tenancy ────────────────────────────────────────────────
+      dynamic "env" {
+        for_each = var.tenant_id != "" ? [1] : []
+        content {
+          name  = "TENANT_ID"
+          value = var.tenant_id
+        }
+      }
+      dynamic "env" {
+        for_each = var.data_region != "" ? [1] : []
+        content {
+          name  = "DATA_REGION"
+          value = var.data_region
+        }
+      }
+
+      # ── Secrets (Key Vault references when enabled) ──────────────────
       dynamic "env" {
         for_each = var.central_api_key != "" ? [1] : []
         content {
@@ -154,9 +313,8 @@ resource "azurerm_container_app" "relay" {
   }
 
   registry {
-    server               = azurerm_container_registry.spoke.login_server
-    username             = azurerm_container_registry.spoke.admin_username
-    password_secret_name = "acr-password"
+    server   = azurerm_container_registry.spoke.login_server
+    identity = azurerm_user_assigned_identity.spoke.id
   }
 
   dynamic "secret" {
@@ -167,10 +325,7 @@ resource "azurerm_container_app" "relay" {
     }
   }
 
-  secret {
-    name  = "acr-password"
-    value = azurerm_container_registry.spoke.admin_password
-  }
+  depends_on = [azurerm_role_assignment.acr_pull]
 }
 
 # ─── Container Apps: Edge Gateways (one per workload) ────────────────────────
@@ -184,6 +339,11 @@ resource "azurerm_container_app" "gateway" {
   revision_mode                = "Single"
 
   tags = local.common_tags
+
+  identity {
+    type         = "UserAssigned"
+    identity_ids = [azurerm_user_assigned_identity.spoke.id]
+  }
 
   template {
     min_replicas = 1
@@ -263,6 +423,22 @@ resource "azurerm_container_app" "gateway" {
         value = "true"
       }
 
+      # ── Multi-tenancy ────────────────────────────────────────────────
+      dynamic "env" {
+        for_each = var.tenant_id != "" ? [1] : []
+        content {
+          name  = "TENANT_ID"
+          value = var.tenant_id
+        }
+      }
+      dynamic "env" {
+        for_each = var.data_region != "" ? [1] : []
+        content {
+          name  = "DATA_REGION"
+          value = var.data_region
+        }
+      }
+
       liveness_probe {
         transport = "HTTP"
         path      = "/health"
@@ -289,15 +465,142 @@ resource "azurerm_container_app" "gateway" {
   }
 
   registry {
-    server               = azurerm_container_registry.spoke.login_server
-    username             = azurerm_container_registry.spoke.admin_username
-    password_secret_name = "acr-password"
+    server   = azurerm_container_registry.spoke.login_server
+    identity = azurerm_user_assigned_identity.spoke.id
   }
 
-  secret {
-    name  = "acr-password"
-    value = azurerm_container_registry.spoke.admin_password
+  depends_on = [azurerm_container_app.relay, azurerm_role_assignment.acr_pull]
+}
+
+# =============================================================================
+# Azure Monitor — Alert Rules
+# =============================================================================
+
+# ─── Action Group for alerts ──────────────────────────────────────────────────
+
+resource "azurerm_monitor_action_group" "spoke" {
+  name                = "${local.name_prefix}-alerts-ag"
+  resource_group_name = azurerm_resource_group.spoke.name
+  short_name          = "widspoke"
+
+  tags = local.common_tags
+}
+
+# ─── Alert: Relay unhealthy for >5 minutes ────────────────────────────────────
+
+resource "azurerm_monitor_scheduled_query_rules_alert_v2" "relay_unhealthy" {
+  name                = "${local.name_prefix}-relay-unhealthy"
+  resource_group_name = azurerm_resource_group.spoke.name
+  location            = azurerm_resource_group.spoke.location
+  description         = "Relay container app has been unhealthy for more than 5 minutes"
+  severity            = 1
+  enabled             = true
+
+  scopes                = [azurerm_log_analytics_workspace.spoke.id]
+  evaluation_frequency  = "PT5M"
+  window_duration       = "PT5M"
+
+  criteria {
+    query = <<-KQL
+      ContainerAppSystemLogs_CL
+      | where ContainerAppName_s == "${local.name_prefix}-relay"
+      | where Log_s contains "Unhealthy" or Log_s contains "unhealthy"
+      | summarize UnhealthyCount = count() by bin(TimeGenerated, 5m)
+    KQL
+    time_aggregation_method = "Count"
+    operator                = "GreaterThan"
+    threshold               = 0
+
+    failing_periods {
+      minimum_failing_periods_to_trigger_alert = 1
+      number_of_evaluation_periods             = 1
+    }
   }
 
-  depends_on = [azurerm_container_app.relay]
+  action {
+    action_groups = [azurerm_monitor_action_group.spoke.id]
+  }
+
+  tags = local.common_tags
+}
+
+# ─── Alert: Container restarts > 3 ────────────────────────────────────────────
+
+resource "azurerm_monitor_scheduled_query_rules_alert_v2" "container_restarts" {
+  name                = "${local.name_prefix}-container-restarts"
+  resource_group_name = azurerm_resource_group.spoke.name
+  location            = azurerm_resource_group.spoke.location
+  description         = "Container restart count exceeded threshold (>3 in 15 minutes)"
+  severity            = 2
+  enabled             = true
+
+  scopes                = [azurerm_log_analytics_workspace.spoke.id]
+  evaluation_frequency  = "PT5M"
+  window_duration       = "PT15M"
+
+  criteria {
+    query = <<-KQL
+      ContainerAppSystemLogs_CL
+      | where Log_s contains "Started" or Log_s contains "Restarting"
+      | summarize RestartCount = count() by ContainerAppName_s, bin(TimeGenerated, 15m)
+      | where RestartCount > 3
+    KQL
+    time_aggregation_method = "Count"
+    operator                = "GreaterThan"
+    threshold               = 0
+
+    failing_periods {
+      minimum_failing_periods_to_trigger_alert = 1
+      number_of_evaluation_periods             = 1
+    }
+  }
+
+  action {
+    action_groups = [azurerm_monitor_action_group.spoke.id]
+  }
+
+  tags = local.common_tags
+}
+
+# ─── Alert: Memory usage > 80% ────────────────────────────────────────────────
+
+resource "azurerm_monitor_scheduled_query_rules_alert_v2" "memory_high" {
+  name                = "${local.name_prefix}-memory-high"
+  resource_group_name = azurerm_resource_group.spoke.name
+  location            = azurerm_resource_group.spoke.location
+  description         = "Container memory usage exceeds 80%"
+  severity            = 2
+  enabled             = true
+
+  scopes                = [azurerm_log_analytics_workspace.spoke.id]
+  evaluation_frequency  = "PT5M"
+  window_duration       = "PT5M"
+
+  criteria {
+    query = <<-KQL
+      ContainerAppConsoleLogs_CL
+      | where Log_s contains "memory"
+      | union (
+        Perf
+        | where ObjectName == "Container" and CounterName == "memoryWorkingSetBytes"
+        | extend MemoryMB = CounterValue / 1048576
+        | where MemoryMB > 400
+      )
+      | summarize HighMemCount = count() by bin(TimeGenerated, 5m)
+    KQL
+    time_aggregation_method = "Count"
+    operator                = "GreaterThan"
+    threshold               = 0
+
+    failing_periods {
+      minimum_failing_periods_to_trigger_alert = 1
+      number_of_evaluation_periods             = 1
+    }
+  }
+
+  action {
+    action_groups = [azurerm_monitor_action_group.spoke.id]
+  }
+
+  tags = local.common_tags
 }

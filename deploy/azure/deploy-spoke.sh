@@ -54,9 +54,13 @@ if [ -z "$SUBSCRIPTION" ]; then
 fi
 
 ACR_LOGIN_SERVER="${ACR_NAME}.azurecr.io"
-echo "  Subscription: $SUBSCRIPTION"
-echo "  Region:       $AZURE_REGION"
-echo "  ACR:          $ACR_LOGIN_SERVER"
+ENABLE_KEYVAULT="${ENABLE_KEYVAULT:-true}"
+TENANT_ID="${TENANT_ID:-}"
+
+echo "  Subscription:  $SUBSCRIPTION"
+echo "  Region:        $AZURE_REGION"
+echo "  ACR:           $ACR_LOGIN_SERVER"
+echo "  Key Vault:     $ENABLE_KEYVAULT"
 echo ""
 
 # ── Destroy ──────────────────────────────────────────────────────────────────
@@ -74,12 +78,14 @@ fi
 build_and_push() {
   echo "=== Building and pushing images ==="
 
-  # Login to ACR
+  # Login to ACR using Managed Identity token (falls back to admin if available)
   az acr login --name "$ACR_NAME" 2>/dev/null || {
     echo "ACR does not exist yet — will be created by Terraform."
     echo "Run with --terraform-only first, then --build-only."
     exit 1
   }
+
+  echo "  NOTE: ACR admin is disabled. Push uses 'az acr login' (AAD token)."
 
   # Build relay-service
   echo "  Building relay-service..."
@@ -128,6 +134,34 @@ terraform_apply() {
   echo "=== Terraform apply complete ==="
   echo ""
 
+  # ── Post-apply: Key Vault setup verification ────────────────────────────────
+  if [ "$ENABLE_KEYVAULT" = "true" ]; then
+    echo "=== Verifying Key Vault setup ==="
+    KV_NAME=$(terraform output -raw keyvault_name 2>/dev/null || echo "")
+    MI_CLIENT_ID=$(terraform output -raw managed_identity_client_id 2>/dev/null || echo "")
+
+    if [ -n "$KV_NAME" ]; then
+      echo "  Key Vault:           $KV_NAME"
+      echo "  Managed Identity:    $MI_CLIENT_ID"
+
+      # Verify secrets access
+      az keyvault secret list --vault-name "$KV_NAME" --query "[].name" -o tsv 2>/dev/null && \
+        echo "  Key Vault access:    OK" || \
+        echo "  Key Vault access:    WARN — deployer may need 'Key Vault Administrator' role"
+    fi
+    echo ""
+  fi
+
+  # ── Post-apply: Managed Identity role verification ──────────────────────────
+  echo "=== Verifying Managed Identity ==="
+  MI_PRINCIPAL=$(terraform output -raw managed_identity_principal_id 2>/dev/null || echo "")
+  if [ -n "$MI_PRINCIPAL" ]; then
+    echo "  Principal ID: $MI_PRINCIPAL"
+    echo "  AcrPull role assigned via Terraform"
+    echo "  No stored ACR credentials — using identity-based pull"
+  fi
+  echo ""
+
   # Print outputs
   echo "=== Spoke Deployment Summary ==="
   terraform output -json spoke_summary 2>/dev/null | python3 -m json.tool 2>/dev/null || \
@@ -166,3 +200,8 @@ echo "  curl \$RELAY_URL/health"
 echo ""
 echo "Check GCP hub registration:"
 echo "  curl http://34.120.74.81/api/v1/relay/environments"
+echo ""
+echo "Key outputs:"
+echo "  terraform -chdir=$TF_DIR output managed_identity_client_id"
+echo "  terraform -chdir=$TF_DIR output keyvault_url"
+echo "  terraform -chdir=$TF_DIR output vnet_id"

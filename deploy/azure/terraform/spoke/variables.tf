@@ -117,6 +117,57 @@ variable "gateway_memory" {
   default     = "0.5Gi"
 }
 
+# ─── VNET ──────────────────────────────────────────────────────────────────────
+
+variable "enable_vnet" {
+  description = "Enable VNET integration for Container Apps Environment"
+  type        = bool
+  default     = true
+}
+
+variable "vnet_cidr" {
+  description = "CIDR block for the spoke VNET"
+  type        = string
+  default     = "10.2.0.0/16"
+}
+
+# ─── Key Vault ─────────────────────────────────────────────────────────────────
+
+variable "enable_keyvault" {
+  description = "Enable Azure Key Vault for secret management"
+  type        = bool
+  default     = true
+}
+
+variable "federation_push_secret" {
+  description = "Federation push secret stored in Key Vault"
+  type        = string
+  default     = ""
+  sensitive   = true
+}
+
+# ─── Multi-tenancy ─────────────────────────────────────────────────────────────
+
+variable "tenant_id" {
+  description = "WID tenant ID for multi-tenancy isolation"
+  type        = string
+  default     = ""
+}
+
+variable "data_region" {
+  description = "Data sovereignty region tag for this spoke"
+  type        = string
+  default     = ""
+}
+
+# ─── mTLS ──────────────────────────────────────────────────────────────────────
+
+variable "enable_mtls" {
+  description = "Enable mTLS configuration for relay-to-hub communication"
+  type        = bool
+  default     = false
+}
+
 locals {
   common_tags = {
     Project     = var.project_name
