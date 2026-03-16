@@ -128,6 +128,8 @@ const Dashboard = () => {
   const [enforcement, setEnforcement] = useState(null);
   const [graphSummary, setGraphSummary] = useState(null);
   const [loading, setLoading] = useState(true);
+  const [lastUpdated, setLastUpdated] = useState(null);
+  const [lastUpdatedAgo, setLastUpdatedAgo] = useState('');
   const navigate = useNavigate();
 
   useEffect(() => {
@@ -141,12 +143,33 @@ const Dashboard = () => {
         setWorkloads(wRes.workloads || []);
         if (eRes) setEnforcement(eRes);
         if (gRes?.summary) setGraphSummary(gRes.summary);
+        setLastUpdated(Date.now());
       } catch (e) { console.error('Dashboard fetch error:', e); }
       finally { setLoading(false); }
     };
     fetchData();
-    const interval = setInterval(fetchData, 30000);
-    return () => clearInterval(interval);
+    const interval = setInterval(fetchData, 15000);
+
+    // Listen for enforcement changes from other tabs/components
+    let bc;
+    try {
+      bc = new BroadcastChannel('wid-enforcement');
+      bc.onmessage = (ev) => {
+        if (ev.data?.type === 'enforcement-changed') fetchData();
+      };
+    } catch (_) { /* BroadcastChannel not supported */ }
+
+    // Tick the "last updated" display every 5s
+    const agoInterval = setInterval(() => {
+      setLastUpdated(prev => {
+        if (!prev) return prev;
+        const secs = Math.round((Date.now() - prev) / 1000);
+        setLastUpdatedAgo(secs < 5 ? 'just now' : `${secs}s ago`);
+        return prev;
+      });
+    }, 5000);
+
+    return () => { clearInterval(interval); clearInterval(agoInterval); try { bc?.close(); } catch (_) {} };
   }, []);
 
   /* ── Computed stats ── */
@@ -266,6 +289,14 @@ const Dashboard = () => {
 
   return (
     <div className="max-w-full">
+      {/* Last updated indicator */}
+      {lastUpdatedAgo && (
+        <div className="flex justify-end mb-2">
+          <span className="text-[10px] text-nhi-muted font-mono" style={{ opacity: 0.6 }}>
+            Last updated: {lastUpdatedAgo}
+          </span>
+        </div>
+      )}
       {/* Row 1: Metrics */}
       <div className="grid grid-cols-5 gap-4 mb-6 stagger">
         <MetricCard label="Total NHIs" value={stats.total} sub={`${Object.keys(stats.categories).length} categories`} icon={Server} color="#7c6ff0" onClick={() => navigate('/workloads')} />

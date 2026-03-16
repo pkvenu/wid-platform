@@ -702,10 +702,17 @@ export default function GraphPage() {
       zoomTransformRef.current = e.transform;
       const k = e.transform.k;
       zoomLevelRef.current = k;
-      // Zoom-dependent label visibility
+      // Adaptive zoom-dependent label visibility + font size
+      const fontSize = Math.min(12, Math.max(7, 7 + (k - 0.3) * 3.5));
+      const opacity = Math.min(1, Math.max(0, (k - 0.3) / 0.4));
+      const maxChars = k < 0.8 ? 14 : k <= 1.5 ? 22 : 40;
       g.selectAll('text.node-label')
-        .attr('opacity', k > 0.6 ? 1 : 0)
-        .attr('font-size', k > 1.2 ? '9px' : '8px');
+        .attr('opacity', opacity)
+        .attr('font-size', fontSize + 'px')
+        .text(d => {
+          const lbl = d.label || '';
+          return lbl.length > maxChars ? lbl.slice(0, maxChars - 2) + '..' : lbl;
+        });
     });
     svg.call(zoom);
     zoomRef.current = zoom;
@@ -783,7 +790,8 @@ export default function GraphPage() {
     node.append('text').text(d => d.label?.length > 22 ? d.label.slice(0, 20) + '..' : d.label)
       .attr('class', 'node-label')
       .attr('dy', d => vis(d.type, d).r + 12).attr('text-anchor', 'middle')
-      .attr('fill', '#c0c0cc').attr('font-size', '8px').attr('font-family', 'monospace').attr('pointer-events', 'none');
+      .attr('fill', '#c0c0cc').attr('font-size', '8px').attr('font-family', 'monospace').attr('pointer-events', 'none')
+      .attr('stroke', '#0d0d14').attr('stroke-width', '2px').attr('paint-order', 'stroke');
 
     node.on('click', (e, d) => {
       e.stopPropagation();
@@ -2493,6 +2501,7 @@ function RemediationPanel({ path, onClose, graphNodes, onSimResult, onEnforced }
       });
       if (r.ok) {
         setPolicies(prev => ({ ...prev, [tplId]: { ...prev[tplId], mode: 'enforce' } }));
+        try { new BroadcastChannel('wid-enforcement').postMessage({ type: 'enforcement-changed' }); } catch (_) {}
         // Immediately update graph visuals
         if (onEnforced) {
           const affectedNodes = new Set();
@@ -2533,6 +2542,7 @@ function RemediationPanel({ path, onClose, graphNodes, onSimResult, onEnforced }
       });
       if (r.ok) {
         setPolicies(prev => ({ ...prev, [tplId]: { ...prev[tplId], mode: 'audit' } }));
+        try { new BroadcastChannel('wid-enforcement').postMessage({ type: 'enforcement-changed' }); } catch (_) {}
         // Refresh graph data so path counts and summary bar update
         setTimeout(() => {
           if (typeof window.__widFetchAll === 'function') window.__widFetchAll();
@@ -3802,6 +3812,7 @@ function NodePanel({ node, rels, nodes, timeline = [], enforceLogStream = [], di
       for (const n of (ap.credential_chain || [])) { if (n.label) affectedNodes.add(n.label); if (n.id) affectedNodes.add(n.id); }
     }
     if (onEnforced) onEnforced(node.label, killedPaths, 'enforce', [...affectedNodes]);
+    try { new BroadcastChannel('wid-enforcement').postMessage({ type: 'enforcement-changed' }); } catch (_) {}
 
     let policyId = null;
     try {
@@ -3870,6 +3881,7 @@ function NodePanel({ node, rels, nodes, timeline = [], enforceLogStream = [], di
       }
       const killedPaths = _rawAttackPaths.filter(ap => ap.remediation?.status === 'enforced').map(ap => ap.id).filter(Boolean);
       if (onEnforced) onEnforced(node.label, killedPaths, 'audit', [...affectedNodes]);
+      try { new BroadcastChannel('wid-enforcement').postMessage({ type: 'enforcement-changed' }); } catch (_) {}
       setTimeout(() => { if (typeof window.__widFetchAll === 'function') window.__widFetchAll(); }, 1500);
     } catch (e) { console.error('Rollback failed:', e); }
     finally { setRollbackLoading(false); }

@@ -99,8 +99,10 @@ const TemplateGallery = () => {
         body: JSON.stringify({ enforcement_mode: 'audit' }),
       });
       const d = await r.json();
-      if (r.ok) toast.success(`Policy "${d.policy?.name || template.name}" deployed in audit mode`);
-      else toast.error(d.error || 'Deploy failed');
+      if (r.ok) {
+        toast.success(`Policy "${d.policy?.name || template.name}" deployed in audit mode`);
+        try { new BroadcastChannel('wid-enforcement').postMessage({ type: 'enforcement-changed' }); } catch (_) {}
+      } else toast.error(d.error || 'Deploy failed');
     } catch (e) { toast.error(e.message); }
   };
 
