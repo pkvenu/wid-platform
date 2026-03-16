@@ -38,6 +38,23 @@ const cors = require('cors');
 const http = require('http');
 const https = require('https');
 
+// ── mTLS Federation (ADR-13) ──
+let TLSManager, traceContext;
+try {
+  const core = require('@wid/core');
+  TLSManager = core.TLSManager;
+  traceContext = core.traceContext;
+} catch {
+  try {
+    const core = require('../../shared/data-plane-core/src/core');
+    TLSManager = core.TLSManager;
+    traceContext = core.traceContext;
+  } catch {
+    TLSManager = null;
+    traceContext = null;
+  }
+}
+
 const app = express();
 app.use(cors());
 app.use(express.json({ limit: '10mb' }));
@@ -58,6 +75,15 @@ const CONFIG = {
   centralApiKey:     process.env.CENTRAL_API_KEY || '',
   registrationUrl:   process.env.CENTRAL_REGISTRATION_URL || '',     // defaults to centralUrl + /api/v1/relay/register
 
+  // mTLS Federation (ADR-13)
+  relayCertPath:     process.env.RELAY_CERT_PATH || '',              // Path to X.509 client cert (PEM)
+  relayKeyPath:      process.env.RELAY_KEY_PATH || '',               // Path to private key (PEM)
+  relayCaPath:       process.env.RELAY_CA_BUNDLE_PATH || '',         // Path to CA bundle for hub verification
+  relaySpiffeId:     process.env.RELAY_SPIFFE_ID || '',              // Override SPIFFE ID (derived from cert SAN if not set)
+  webhookEnabled:    process.env.WEBHOOK_ENABLED !== 'false',        // Enable policy push webhook (default: true)
+  webhookPort:       parseInt(process.env.WEBHOOK_PORT || '3006'),   // Webhook listener port
+  federationPushSecret: process.env.FEDERATION_PUSH_SECRET || 'wid-federation-push',
+
   // Sync settings
   policySyncIntervalMs:  parseInt(process.env.POLICY_SYNC_INTERVAL_MS || '30000'),   // 30s default
   auditFlushIntervalMs:  parseInt(process.env.AUDIT_FLUSH_INTERVAL_MS || '10000'),   // 10s default
@@ -72,7 +98,35 @@ const CONFIG = {
   maxAuditBufferSize:    parseInt(process.env.MAX_AUDIT_BUFFER_SIZE || '10000'),
   syncTimeoutMs:         parseInt(process.env.SYNC_TIMEOUT_MS || '5000'),
   retryBackoffMs:        parseInt(process.env.RETRY_BACKOFF_MS || '5000'),
+
+  // Data sovereignty
+  tenantId:              process.env.TENANT_ID || null,
+  dataRegion:            process.env.DATA_REGION || process.env.REGION || 'us',
 };
+
+// ═══════════════════════════════════════════════════════════════
+// mTLS Manager (ADR-13)
+// ═══════════════════════════════════════════════════════════════
+
+let tlsManager = null;
+if (TLSManager && CONFIG.relayCertPath && CONFIG.relayKeyPath) {
+  try {
+    tlsManager = new TLSManager({
+      certPath: CONFIG.relayCertPath,
+      keyPath: CONFIG.relayKeyPath,
+      caPath: CONFIG.relayCaPath || undefined,
+      watchFiles: true,
+      onRotation: (info) => {
+        log('info', 'Certificate rotated', info);
+        // Re-register with new cert fingerprint
+        registerWithCentral().catch(() => {});
+      },
+    });
+    console.log(`  ✅ mTLS enabled (SPIFFE ID: ${tlsManager.spiffeId || 'none'}, fingerprint: ${tlsManager.fingerprint?.substring(0, 16)}...)`);
+  } catch (e) {
+    console.warn(`  ⚠️  mTLS init failed: ${e.message} — falling back to API key auth`);
+  }
+}
 
 // ═══════════════════════════════════════════════════════════════
 // State
@@ -104,6 +158,14 @@ const state = {
   // Relay health
   startedAt: new Date().toISOString(),
   centralReachable: false,
+
+  // Data sovereignty
+  sovereigntyHeldLocally: 0,  // audit events held due to strict residency
+
+  // mTLS Federation (ADR-13)
+  mtlsEnabled: !!tlsManager,
+  spiffeId: tlsManager?.spiffeId || CONFIG.relaySpiffeId || null,
+  certFingerprint: tlsManager?.fingerprint || null,
 };
 
 // ═══════════════════════════════════════════════════════════════
@@ -125,9 +187,17 @@ function httpRequest(url, method, body, timeoutMs, extraHeaders) {
         ...(CONFIG.centralApiKey ? { 'Authorization': `Bearer ${CONFIG.centralApiKey}` } : {}),
         'X-WID-Relay-Id': state.relayId || CONFIG.envName,
         'X-WID-Environment': CONFIG.envName,
+        // mTLS identity headers (ADR-13)
+        ...(state.spiffeId ? { 'X-WID-Relay-SPIFFE-ID': state.spiffeId } : {}),
         ...(extraHeaders || {}),
       },
     };
+
+    // Use mTLS agent for HTTPS connections when TLS manager is configured
+    if (parsed.protocol === 'https:' && tlsManager?.isLoaded) {
+      opts.agent = tlsManager.createMTLSAgent();
+    }
+
     const req = transport.request(opts, (res) => {
       let data = '';
       res.on('data', chunk => data += chunk);
@@ -167,36 +237,55 @@ async function registerWithCentral() {
     return;
   }
 
-  const registrationUrl = CONFIG.registrationUrl || `${CONFIG.centralUrl}/api/v1/relay/register`;
+  // Try federation endpoint first (mTLS-aware), fall back to legacy
+  const federationUrl = `${CONFIG.centralUrl}/api/v1/federation/register`;
+  const legacyUrl = CONFIG.registrationUrl || `${CONFIG.centralUrl}/api/v1/relay/register`;
+  const webhookEndpoint = CONFIG.webhookEnabled
+    ? `http://${CONFIG.envName}-relay:${CONFIG.webhookPort}`
+    : null;
+
   const payload = {
     environment_name: CONFIG.envName,
     environment_type: CONFIG.envType,
     region: CONFIG.region,
     cluster_id: CONFIG.clusterId,
     relay_version: '1.0.0',
-    capabilities: ['policy-cache', 'audit-forward', 'health-report'],
+    capabilities: ['policy-cache', 'audit-forward', 'health-report', ...(state.mtlsEnabled ? ['mtls'] : []), ...(CONFIG.webhookEnabled ? ['webhook-push'] : [])],
     endpoint: `http://${CONFIG.envName}-relay:${CONFIG.port}`,  // how central can reach us (if needed)
+    webhook_url: webhookEndpoint,
     adapters: CONFIG.localAdapters,
     registered_at: new Date().toISOString(),
+    data_region: CONFIG.dataRegion,
+    tenant_id: CONFIG.tenantId,
+    // mTLS identity (ADR-13)
+    spiffe_id: state.spiffeId || null,
+    cert_fingerprint: state.certFingerprint || null,
   };
 
-  try {
-    const res = await httpRequest(registrationUrl, 'POST', payload);
-    if (res.status === 200 || res.status === 201) {
-      state.registered = true;
-      state.relayId = res.data?.relay_id || CONFIG.envName;
-      state.registeredAt = new Date().toISOString();
-      state.centralReachable = true;
-      log('info', 'Registered with central control plane', {
-        relayId: state.relayId,
-        centralUrl: CONFIG.centralUrl,
-      });
-    } else {
-      log('warn', 'Registration failed', { status: res.status, body: res.data });
+  // Try federation endpoint first, fall back to legacy
+  for (const url of [federationUrl, legacyUrl]) {
+    try {
+      const res = await httpRequest(url, 'POST', payload);
+      if (res.status === 200 || res.status === 201) {
+        state.registered = true;
+        state.relayId = res.data?.relay_id || CONFIG.envName;
+        state.registeredAt = new Date().toISOString();
+        state.centralReachable = true;
+        log('info', 'Registered with central control plane', {
+          relayId: state.relayId,
+          centralUrl: CONFIG.centralUrl,
+          mtls: state.mtlsEnabled,
+          mtlsVerified: res.data?.mtls_verified || false,
+          endpoint: url.includes('federation') ? 'federation' : 'legacy',
+        });
+        return;
+      }
+    } catch (e) {
+      // If federation endpoint fails (404, etc.), try legacy
+      if (url === federationUrl) continue;
+      log('warn', 'Cannot reach central control plane', { error: e.message, url });
+      state.centralReachable = false;
     }
-  } catch (e) {
-    log('warn', 'Cannot reach central control plane', { error: e.message, url: registrationUrl });
-    state.centralReachable = false;
   }
 }
 
@@ -257,6 +346,8 @@ function bufferAuditEvent(event) {
     relay_id: state.relayId,
     relay_env: CONFIG.envName,
     relay_region: CONFIG.region,
+    // mTLS identity (ADR-13) — include relay SPIFFE ID for cross-env trace linking
+    relay_spiffe_id: state.spiffeId || null,
     buffered_at: new Date().toISOString(),
   });
   return true;
@@ -311,7 +402,9 @@ async function flushAuditBuffer() {
 async function reportHealth() {
   if (!CONFIG.centralUrl || !state.registered) return;
 
-  const healthUrl = `${CONFIG.centralUrl}/api/v1/relay/heartbeat`;
+  // Try federation heartbeat first, fall back to legacy
+  const federationUrl = `${CONFIG.centralUrl}/api/v1/federation/heartbeat`;
+  const legacyUrl = `${CONFIG.centralUrl}/api/v1/relay/heartbeat`;
   const payload = {
     relay_id: state.relayId,
     environment: CONFIG.envName,
@@ -323,16 +416,25 @@ async function reportHealth() {
     audit_buffer_size: state.auditBuffer.length,
     audit_flushed_total: state.auditFlushed,
     audit_dropped_total: state.auditDropped,
+    adapter_count: state.adapters.size,
     adapters: Object.fromEntries(state.adapters),
     timestamp: new Date().toISOString(),
+    // mTLS identity (ADR-13)
+    spiffe_id: state.spiffeId || null,
+    cert_expiring_soon: tlsManager?.isExpiringSoon() || false,
+    cert_remaining_s: tlsManager?.getRemainingValiditySec() || null,
   };
 
-  try {
-    await httpRequest(healthUrl, 'POST', payload);
-    state.lastHeartbeatAt = new Date().toISOString();
-    state.centralReachable = true;
-  } catch (e) {
-    state.centralReachable = false;
+  for (const url of [federationUrl, legacyUrl]) {
+    try {
+      await httpRequest(url, 'POST', payload);
+      state.lastHeartbeatAt = new Date().toISOString();
+      state.centralReachable = true;
+      return;
+    } catch (e) {
+      if (url === federationUrl) continue;
+      state.centralReachable = false;
+    }
   }
 }
 
@@ -356,6 +458,16 @@ app.get('/health', (req, res) => {
     policy_count: state.policies.length,
     audit_buffered: state.auditBuffer.length,
     uptime: Math.round((Date.now() - new Date(state.startedAt).getTime()) / 1000),
+    // mTLS Federation (ADR-13)
+    mtls: {
+      enabled: state.mtlsEnabled,
+      spiffe_id: state.spiffeId || null,
+      cert_fingerprint: state.certFingerprint ? state.certFingerprint.substring(0, 16) + '...' : null,
+      cert_expiring_soon: tlsManager?.isExpiringSoon() || false,
+      cert_remaining_s: tlsManager?.getRemainingValiditySec() || null,
+      webhook_enabled: CONFIG.webhookEnabled,
+      webhook_port: CONFIG.webhookEnabled ? CONFIG.webhookPort : null,
+    },
   });
 });
 
@@ -442,14 +554,15 @@ app.post('/api/v1/access/decisions', (req, res) => {
 
 // ── Adapter registration (local adapters announce themselves) ──
 app.post('/api/v1/relay/adapter/register', (req, res) => {
-  const { adapter_id, adapter_type, endpoint } = req.body;
+  const { adapter_id, adapter_type, endpoint, tenant_id } = req.body;
   state.adapters.set(adapter_id || `adapter-${state.adapters.size}`, {
     type: adapter_type || 'ext-authz',
     endpoint,
+    tenant_id: tenant_id || null,
     registered_at: new Date().toISOString(),
     last_seen: new Date().toISOString(),
   });
-  log('info', 'Adapter registered', { adapter_id, adapter_type, totalAdapters: state.adapters.size });
+  log('info', 'Adapter registered', { adapter_id, adapter_type, tenant_id: tenant_id || null, totalAdapters: state.adapters.size });
   res.json({ status: 'registered', relay_id: state.relayId, environment: CONFIG.envName });
 });
 
@@ -518,19 +631,25 @@ app.get('/metrics', (req, res) => {
 // When this relay IS the central (running alongside the policy engine),
 // it also serves these endpoints for other relays to connect to.
 
-const relayRegistry = new Map();  // relayId → { env, region, lastHeartbeat, ... }
+const relayRegistry = new Map();  // relayId → { env, region, lastHeartbeat, tenant_id, ... }
 
 app.post('/api/v1/relay/register', (req, res) => {
-  const { environment_name, environment_type, region, cluster_id, relay_version } = req.body;
+  const { environment_name, environment_type, region, cluster_id, relay_version, tenant_id,
+          data_region, data_residency_strict, allowed_regions } = req.body;
   const relayId = `relay-${environment_name}-${Date.now().toString(36)}`;
+  const effectiveDataRegion = data_region || region || 'us';
   relayRegistry.set(relayId, {
     environment_name, environment_type, region, cluster_id, relay_version,
+    tenant_id: tenant_id || null,
+    data_region: effectiveDataRegion,
+    data_residency_strict: data_residency_strict || false,
+    allowed_regions: allowed_regions || [effectiveDataRegion],
     registered_at: new Date().toISOString(),
     last_heartbeat: new Date().toISOString(),
     status: 'active',
   });
-  log('info', 'Relay registered', { relayId, environment_name, region });
-  res.json({ relay_id: relayId, status: 'registered' });
+  log('info', 'Relay registered', { relayId, environment_name, region, data_region: effectiveDataRegion, tenant_id: tenant_id || null });
+  res.json({ relay_id: relayId, status: 'registered', data_region: effectiveDataRegion });
 });
 
 app.post('/api/v1/relay/heartbeat', (req, res) => {
@@ -545,34 +664,122 @@ app.post('/api/v1/relay/heartbeat', (req, res) => {
 });
 
 app.get('/api/v1/relay/policies', (req, res) => {
-  // Return policies for relays to sync
-  // In production, filter by environment/region if needed
+  const { tenant_id, region, relay_id } = req.query;
+  let filteredPolicies = state.policies;
+
+  // Filter by tenant_id if provided — only return policies belonging to that tenant
+  if (tenant_id) {
+    filteredPolicies = filteredPolicies.filter(p =>
+      !p.tenant_id || p.tenant_id === tenant_id
+    );
+  }
+
+  // Warn if relay requests policies for a different region than its registration
+  if (relay_id && region) {
+    const relay = relayRegistry.get(relay_id);
+    if (relay && relay.data_region && relay.data_region !== region) {
+      log('warn', 'Relay requesting policies for region different from registered data_region', {
+        relay_id, registered_region: relay.data_region, requested_region: region,
+      });
+    }
+  }
+
   res.json({
     version: state.policyVersion,
     hash: state.policyHash,
-    policies: state.policies,
+    policies: filteredPolicies,
+    tenant_id: tenant_id || null,
+    region: region || null,
     synced_at: new Date().toISOString(),
   });
 });
 
 app.post('/api/v1/relay/audit/batch', (req, res) => {
   const { relay_id, environment, entries } = req.body;
-  // Buffer for storage (in production, write to DB or forward to audit service)
+  // Look up relay's registered sovereignty settings
+  const relay = relay_id ? relayRegistry.get(relay_id) : null;
+  const relayDataRegion = relay?.data_region || 'us';
+  const relayTenantId = relay?.tenant_id || null;
+  const strictResidency = relay?.data_residency_strict || false;
+
   let accepted = 0;
+  let heldLocally = 0;
+
   if (Array.isArray(entries)) {
     for (const entry of entries) {
-      bufferAuditEvent({ ...entry, source_relay: relay_id, source_environment: environment });
+      const taggedEntry = {
+        ...entry,
+        source_relay: relay_id,
+        source_environment: environment,
+        data_region: relayDataRegion,
+        tenant_id: entry.tenant_id || relayTenantId,
+      };
+
+      // If strict residency and central hub is in a different region, hold locally
+      if (strictResidency && CONFIG.dataRegion !== relayDataRegion) {
+        taggedEntry.sovereignty_held_locally = true;
+        heldLocally++;
+        state.sovereigntyHeldLocally++;
+        // Still buffer but mark as held — downstream processors must respect the flag
+      }
+
+      bufferAuditEvent(taggedEntry);
       accepted++;
     }
   }
-  log('debug', 'Received audit batch from relay', { relay_id, environment, count: accepted });
-  res.json({ accepted, total: entries?.length || 0 });
+
+  log('debug', 'Received audit batch from relay', {
+    relay_id, environment, count: accepted, held_locally: heldLocally,
+    data_region: relayDataRegion,
+  });
+  res.json({ accepted, total: entries?.length || 0, held_locally: heldLocally });
+});
+
+// ── Data sovereignty status ──
+app.get('/api/v1/relay/sovereignty/status', (req, res) => {
+  const relayId = req.query.relay_id;
+
+  // If relay_id specified, return sovereignty status for that relay
+  if (relayId) {
+    const relay = relayRegistry.get(relayId);
+    if (!relay) {
+      return res.status(404).json({ error: 'Relay not found' });
+    }
+    return res.json({
+      relay_id: relayId,
+      tenant_id: relay.tenant_id,
+      data_region: relay.data_region,
+      strict_residency: relay.data_residency_strict || false,
+      allowed_regions: relay.allowed_regions || [relay.data_region],
+      audit_events_held_locally: 0, // per-relay tracking not available at central
+      policy_region_match: relay.data_region === CONFIG.dataRegion,
+    });
+  }
+
+  // Default: return sovereignty status for this relay instance
+  res.json({
+    relay_id: state.relayId || 'self',
+    tenant_id: CONFIG.tenantId,
+    data_region: CONFIG.dataRegion,
+    strict_residency: false, // central hub is not subject to spoke residency rules
+    audit_events_held_locally: state.sovereigntyHeldLocally,
+    policy_region_match: true,
+    connected_relays: Array.from(relayRegistry.entries()).map(([id, r]) => ({
+      relay_id: id,
+      tenant_id: r.tenant_id,
+      data_region: r.data_region,
+      strict_residency: r.data_residency_strict || false,
+    })),
+  });
 });
 
 // ── List all connected relays (for web UI) ──
+// Optional query param: ?tenant_id=... to filter by tenant
 app.get('/api/v1/relay/environments', (req, res) => {
+  const filterTenant = req.query.tenant_id || null;
   const environments = [];
   for (const [id, relay] of relayRegistry) {
+    if (filterTenant && relay.tenant_id && relay.tenant_id !== filterTenant) continue;
     environments.push({ relay_id: id, ...relay });
   }
   // Include self
@@ -747,7 +954,7 @@ const crypto = require('crypto');
 const issuedCredentials = new Map();
 
 app.post('/api/v1/credentials/request', async (req, res) => {
-  const { workload, target_api, scopes, ttl_seconds } = req.body;
+  const { workload, target_api, scopes, ttl_seconds, tenant_id } = req.body;
   if (!workload || !target_api) {
     return res.status(400).json({ error: 'workload and target_api required' });
   }
@@ -792,6 +999,7 @@ app.post('/api/v1/credentials/request', async (req, res) => {
     workload,
     target_api,
     scopes: requestedScopes,
+    tenant_id: tenant_id || null,
     issued_at: new Date().toISOString(),
     expires_at: expiresAt,
     ttl_seconds: requestedTtl,
@@ -873,7 +1081,7 @@ app.get('/api/v1/credentials/active', (req, res) => {
 const delegationChains = new Map(); // chain_id → { hops, root_scope, ... }
 
 app.post('/api/v1/delegation/initiate', async (req, res) => {
-  const { principal, target, scopes, context } = req.body;
+  const { principal, target, scopes, context, tenant_id } = req.body;
   if (!principal || !target) return res.status(400).json({ error: 'principal and target required' });
 
   const chainId = `chain-${Date.now()}-${crypto.randomBytes(4).toString('hex')}`;
@@ -904,6 +1112,7 @@ app.post('/api/v1/delegation/initiate', async (req, res) => {
 
   const chain = {
     chain_id: chainId, root_principal: principal,
+    tenant_id: tenant_id || null,
     scope_ceiling: rootScopes, current_scopes: rootScopes,
     hops: [{
       hop: 0, from: principal, to: target, token,
@@ -1258,6 +1467,61 @@ echo "WID relay deployed. Gateway can be added as a sidecar or separate service.
 // Startup
 // ═══════════════════════════════════════════════════════════════
 
+// ═══════════════════════════════════════════════════════════════
+// Webhook Listener — Receive policy push notifications (ADR-13)
+// ═══════════════════════════════════════════════════════════════
+
+function startWebhookListener() {
+  if (!CONFIG.webhookEnabled || !CONFIG.centralUrl) return;
+
+  const webhookApp = express();
+  webhookApp.use(express.json());
+
+  webhookApp.post('/api/v1/relay/policy-push', async (req, res) => {
+    const signature = req.headers['x-wid-push-signature'];
+    const timestamp = req.headers['x-wid-push-timestamp'];
+    const nonce = req.headers['x-wid-push-nonce'];
+
+    // Validate push age (reject payloads older than 60s)
+    if (timestamp) {
+      const pushAge = Date.now() - new Date(timestamp).getTime();
+      if (pushAge > 60000) {
+        log('warn', 'Rejected stale policy push', { age_ms: pushAge });
+        return res.status(400).json({ error: 'Push payload too old' });
+      }
+    }
+
+    // Validate HMAC signature
+    if (signature) {
+      const expected = require('crypto')
+        .createHmac('sha256', CONFIG.federationPushSecret)
+        .update(JSON.stringify(req.body))
+        .digest('hex');
+      if (signature !== expected) {
+        log('warn', 'Rejected policy push with invalid signature');
+        return res.status(403).json({ error: 'Invalid push signature' });
+      }
+    }
+
+    log('info', 'Received policy push notification', {
+      reason: req.body.reason,
+      policy_ids: req.body.policy_ids,
+      nonce,
+    });
+
+    // Clear policy cache and trigger immediate sync
+    state.policies = [];
+    state.policyVersion = 0;
+    await syncPolicies();
+
+    res.json({ status: 'ok', synced: true, policy_count: state.policies.length });
+  });
+
+  webhookApp.listen(CONFIG.webhookPort, '0.0.0.0', () => {
+    log('info', 'Webhook listener started', { port: CONFIG.webhookPort });
+  });
+}
+
 async function start() {
   log('info', 'Starting WID Relay', {
     environment: CONFIG.envName,
@@ -1265,6 +1529,8 @@ async function start() {
     region: CONFIG.region,
     central: CONFIG.centralUrl || 'standalone',
     port: CONFIG.port,
+    mtls: state.mtlsEnabled,
+    spiffeId: state.spiffeId || 'none',
   });
 
   // Register with central
@@ -1278,8 +1544,14 @@ async function start() {
   setInterval(flushAuditBuffer, CONFIG.auditFlushIntervalMs);
   setInterval(reportHealth, CONFIG.healthReportIntervalMs);
 
+  // Start webhook listener for policy push (ADR-13)
+  startWebhookListener();
+
   // Start HTTP server
   app.listen(CONFIG.port, '0.0.0.0', () => {
+    const mtlsStatus = state.mtlsEnabled
+      ? `mTLS (SPIFFE: ${state.spiffeId || 'N/A'})`
+      : 'API key';
     console.log(`
 ╔══════════════════════════════════════════════════════════════╗
 ║  WID Relay — Hub & Spoke Federation                         ║
@@ -1290,7 +1562,9 @@ async function start() {
 ║  Cluster:      ${CONFIG.clusterId.padEnd(42)}║
 ║  Central:      ${(CONFIG.centralUrl || 'standalone').padEnd(42)}║
 ║  Registered:   ${String(state.registered).padEnd(42)}║
+║  Auth:         ${mtlsStatus.padEnd(42)}║
 ║  Port:         ${String(CONFIG.port).padEnd(42)}║
+║  Webhook:      ${(CONFIG.webhookEnabled ? 'port ' + CONFIG.webhookPort : 'disabled').padEnd(42)}║
 ║                                                              ║
 ║  Endpoints for local adapters:                               ║
 ║    POST /api/v1/access/evaluate/principal  (policy eval)     ║
@@ -1303,9 +1577,15 @@ async function start() {
 ║    GET  /api/v1/relay/status               (relay status)    ║
 ║                                                              ║
 ║  Central federation endpoints:                               ║
-║    POST /api/v1/relay/register             (relay join)      ║
-║    POST /api/v1/relay/heartbeat            (relay heartbeat) ║
+║    POST /api/v1/federation/register        (mTLS register)   ║
+║    POST /api/v1/federation/heartbeat       (mTLS heartbeat)  ║
+║    POST /api/v1/federation/revoke/:id      (revoke relay)    ║
+║    GET  /api/v1/federation/relays          (list relays)     ║
+║    GET  /api/v1/federation/events          (audit log)       ║
+║    POST /api/v1/federation/push            (policy push)     ║
+║    POST /api/v1/relay/register             (legacy join)     ║
 ║    GET  /api/v1/relay/environments         (all envs)        ║
+║    GET  /api/v1/relay/sovereignty/status   (data residency)  ║
 ║                                                              ║
 ╚══════════════════════════════════════════════════════════════╝
 `);

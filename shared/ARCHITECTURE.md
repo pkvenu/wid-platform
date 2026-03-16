@@ -1,4 +1,4 @@
-# Workload Identity Platform — Dual-Mode Data Plane
+# Workload Identity Defense (WID) Platform — Dual-Mode Data Plane
 
 ## Architecture
 
@@ -220,3 +220,22 @@ curl http://localhost:8081/call
 | iptables interception | N/A | ✅ |
 | Envoy header injection | ✅ | N/A |
 | Direct header injection | N/A | ✅ |
+
+## mTLS Federation
+
+The hub-and-spoke relay layer uses mTLS with SPIFFE X.509 SVIDs for relay authentication. This is managed by the `TLSManager` class exported from `@wid/core`, which handles certificate loading, rotation, and mTLS context creation.
+
+### New `@wid/core` Exports
+
+| Export | Purpose |
+|--------|---------|
+| `TLSManager` | Manages relay TLS certificates (load, rotate, create mTLS context for relay connections) |
+| `trace-context` | Propagates `trace_id` across hub-spoke boundaries for cross-environment decision replay |
+
+### How It Works
+
+1. Each spoke relay loads its SPIFFE X.509 SVID from `RELAY_CERT_PATH` and `RELAY_KEY_PATH`.
+2. On connection to the hub, the relay presents its certificate. The hub verifies the certificate chain against the federation CA.
+3. The hub extracts the relay's SPIFFE ID from the SAN field to establish per-relay cryptographic identity.
+4. If certificates are not configured, the relay falls back to `CENTRAL_API_KEY` header authentication.
+5. Cross-environment trace context is propagated via `trace-context`, enabling full audit trail linking across federated deployments.

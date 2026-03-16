@@ -38,6 +38,8 @@ Help build an enterprise-grade Workload Identity platform that:
   audit logs, replay fidelity.
 - **DB is single source of truth**: no hardcoded mock data in code paths. Graph, playbook,
   auth events — all from Postgres.
+- **Multi-tenancy**: All data tables must have `tenant_id` with RLS enforced. Cache keys
+  must include tenant prefix. JWT must carry `tenantId` claim. No cross-tenant data access.
 
 ## NON-NEGOTIABLES — Engineering
 
@@ -82,6 +84,8 @@ When asked for design or implementation, respond with:
 | ADR-09 | Remediation Decision Framework | 6-category taxonomy, decision routing, approval tiers |
 | ADR-10 | ES256 for workload tokens | Asymmetric signing (ECDSA P-256). Only token-service holds private key. JWKS for verification. HS256 fallback during migration. |
 | ADR-11 | MCP Runtime Auditing + Agent Card Signing | MCPInspector mirrors AIInspector (zero-copy tee, async parse). Tool argument values redacted by default. Agent Cards signed with same ES256 keys as token-service. |
+| ADR-12 | Multi-Tenancy via Shared Schema + RLS | Shared DB, shared schema, PostgreSQL RLS + tenant middleware + scoped caches. Three defense layers. 20 threat categories. Data sovereignty with region-tagged spokes. |
+| ADR-13 | mTLS Federation with SPIFFE SVIDs | Per-relay cryptographic identity, cert-based auth, webhook push, cross-env trace linking. API key fallback. |
 
 ---
 
