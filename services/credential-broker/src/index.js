@@ -6,32 +6,39 @@
 const express = require('express');
 const axios = require('axios');
 const jwt = require('jsonwebtoken');
-const { Client } = require('pg');
-
 const providerManager = require('./providers');
 const cache = require('./utils/cache');
 const { RotationScheduler } = require('./rotation/scheduler');
 const { mountLifecycleRoutes } = require('./rotation/lifecycle-routes');
+const { createTenantPool } = require('./shared-loader').tenantDb;
+const securityHeaders = require('./shared-loader').securityHeaders;
+const { apiRateLimiter } = require('./shared-loader').rateLimitMiddleware;
 
 const app = express();
+
+// Security headers (P2.6) — set on every response
+app.use(securityHeaders());
+
 app.use(express.json());
+
+// Rate limiting (P2.6) — 300 req/min per tenant for API routes
+app.use(apiRateLimiter());
 
 // Configuration
 const PORT = process.env.PORT || 3002;
 const OPA_URL = process.env.OPA_URL || 'http://opa:8181';
-const DATABASE_URL = process.env.DATABASE_URL || 'postgresql://wip_user:wip_password@postgres:5432/workload_identity';
 const TOKEN_SERVICE_URL = process.env.TOKEN_SERVICE_URL || 'http://token-service:3000';
 
-let dbClient = null;
+let pool = null;
 
 // =============================================================================
-// Initialize
+// Initialize (pg.Pool via shared tenant-db module)
 // =============================================================================
 async function initDatabase() {
   try {
-    dbClient = new Client({ connectionString: DATABASE_URL });
-    await dbClient.connect();
-    console.log('✅ Database: Connected');
+    pool = createTenantPool();
+    await pool.query('SELECT 1');
+    console.log('✅ Database: Connected (pool)');
   } catch (error) {
     console.error('❌ Database: Failed -', error.message);
   }
@@ -154,7 +161,7 @@ app.all('/v1/proxy/:target/*', async (req, res) => {
     const allowed = await checkPolicy(workloadId, target);
     if (!allowed) {
       console.log(`  ❌ DENIED`);
-      if (dbClient) {
+      if (pool) {
         await logAccess(workloadId, actor, target, method, path, 'denied', null, Date.now() - startTime);
       }
       return res.status(403).json({ error: 'access_denied' });
@@ -216,7 +223,7 @@ app.all('/v1/proxy/:target/*', async (req, res) => {
     console.log(`  📥 ${proxyResponse.status} (${duration}ms)`);
 
     // Log access
-    if (dbClient) {
+    if (pool) {
       await logAccess(workloadId, actor, target, method, path, 'allowed', proxyResponse.status, duration);
     }
 
@@ -246,9 +253,9 @@ async function checkPolicy(workloadId, target) {
 }
 
 async function logAccess(workloadId, actor, target, method, path, result, statusCode, duration) {
-  if (!dbClient) return;
+  if (!pool) return;
   try {
-    await dbClient.query(`
+    await pool.query(`
       INSERT INTO credential_usage 
       (workload_id, target_api, method, path, result, status_code, accessed_at, metadata)
       VALUES ($1, $2, $3, $4, $5, $6, NOW(), $7)
@@ -273,12 +280,115 @@ app.get('/v1/admin/providers', (req, res) => {
 });
 
 // =============================================================================
+// Convenience API Endpoints (top-level paths for common operations)
+// =============================================================================
+
+// POST /api/v1/credentials/rotate — Trigger rotation for a specific credential path
+app.post('/api/v1/credentials/rotate', async (req, res) => {
+  try {
+    const { credential_path, provider, new_value, workload_id } = req.body || {};
+    if (!credential_path) {
+      return res.status(400).json({ error: 'credential_path is required' });
+    }
+
+    if (!pool) {
+      return res.status(503).json({ error: 'Database not connected' });
+    }
+
+    // Delegate to the scheduler (same logic as lifecycle route)
+    const { RotationScheduler } = require('./rotation/scheduler');
+    // Reuse the scheduler instance via the app — it's mounted during start()
+    const scheduler = app.get('rotationScheduler');
+    if (!scheduler) {
+      return res.status(503).json({ error: 'Rotation scheduler not initialized' });
+    }
+
+    const rotation = await scheduler.scheduleRotation(credential_path, 'api', {
+      provider,
+      workloadId: workload_id,
+    });
+
+    // Execute immediately if new_value provided
+    if (new_value) {
+      try {
+        const result = await scheduler.executeRotation(rotation.id, new_value);
+        return res.json({
+          message: `Credential "${credential_path}" rotated successfully`,
+          rotation_id: rotation.id,
+          status: 'completed',
+          old_version: result.oldVersion,
+          new_version: result.newVersion,
+        });
+      } catch (execErr) {
+        return res.status(500).json({
+          error: `Rotation failed: ${execErr.message}`,
+          rotation_id: rotation.id,
+          status: 'failed',
+        });
+      }
+    }
+
+    res.status(202).json({
+      message: `Rotation scheduled for "${credential_path}"`,
+      rotation_id: rotation.id,
+      status: 'pending',
+    });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// GET /api/v1/credentials/rotation-status — Rotation schedule and last rotation times
+app.get('/api/v1/credentials/rotation-status', async (req, res) => {
+  try {
+    const scheduler = app.get('rotationScheduler');
+    if (!scheduler) {
+      return res.status(503).json({ error: 'Rotation scheduler not initialized' });
+    }
+
+    const status = await scheduler.getRotationStatus();
+    res.json({
+      default_max_age_days: scheduler.defaultMaxAgeDays,
+      evaluation_interval_ms: scheduler.evaluationInterval,
+      ...status,
+    });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// GET /api/v1/providers — List active providers with health status
+app.get('/api/v1/providers', async (req, res) => {
+  try {
+    const metadata = providerManager.getProvidersMetadata();
+    const healthResults = await providerManager.healthCheckAll();
+
+    const providers = metadata.map(p => {
+      const provider = providerManager.getProvider(p.key);
+      return {
+        ...p,
+        healthy: healthResults[p.key] || false,
+        capabilities: {
+          rotation: provider?.supportsRotation() || false,
+          revocation: provider?.supportsRevocation() || false,
+          dynamic_secrets: provider?.supportsDynamicSecrets() || false,
+        },
+      };
+    });
+
+    res.json({ providers });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// =============================================================================
 // Health Check
 // =============================================================================
 app.get('/health', async (req, res) => {
   try {
     const opaHealthy = await axios.get(`${OPA_URL}/health`, { timeout: 2000 }).then(() => true).catch(() => false);
-    const dbHealthy = dbClient ? await dbClient.query('SELECT 1').then(() => true).catch(() => false) : false;
+    const dbHealthy = pool ? await pool.query('SELECT 1').then(() => true).catch(() => false) : false;
     const providerHealth = await providerManager.healthCheckAll();
 
     res.json({
@@ -302,10 +412,10 @@ async function start() {
   await providerManager.loadProviders();
   await initDatabase();
 
-  // Startup migration: ensure credential_rotations table exists
-  if (dbClient) {
+  // Startup migration: ensure credential_rotations + rotation_policies tables exist
+  if (pool) {
     try {
-      await dbClient.query(`
+      await pool.query(`
         CREATE TABLE IF NOT EXISTS credential_rotations (
           id              SERIAL PRIMARY KEY,
           credential_path VARCHAR(500) NOT NULL,
@@ -321,44 +431,78 @@ async function start() {
           created_at      TIMESTAMPTZ DEFAULT NOW()
         )
       `);
+      await pool.query(`
+        CREATE TABLE IF NOT EXISTS rotation_policies (
+          id                  SERIAL PRIMARY KEY,
+          credential_path     VARCHAR(500) NOT NULL UNIQUE,
+          provider            VARCHAR(50) NOT NULL,
+          max_age_days        INTEGER NOT NULL DEFAULT 90,
+          auto_rotate         BOOLEAN NOT NULL DEFAULT true,
+          notify_before_days  INTEGER NOT NULL DEFAULT 7,
+          enabled             BOOLEAN NOT NULL DEFAULT true,
+          created_at          TIMESTAMPTZ DEFAULT NOW(),
+          updated_at          TIMESTAMPTZ DEFAULT NOW()
+        )
+      `);
     } catch (e) {
-      console.log('  credential_rotations migration:', e.message);
+      console.log('  startup migration:', e.message);
     }
   }
 
   // Mount lifecycle API routes
-  const scheduler = new RotationScheduler(dbClient, providerManager, {
+  const scheduler = new RotationScheduler(pool, providerManager, {
     defaultMaxAgeDays: parseInt(process.env.ROTATION_MAX_AGE_DAYS) || 90,
     evaluationInterval: parseInt(process.env.ROTATION_EVAL_INTERVAL_MS) || 3600000,
   });
-  mountLifecycleRoutes(app, dbClient, providerManager, scheduler);
+  app.set('rotationScheduler', scheduler);
+  mountLifecycleRoutes(app, pool, providerManager, scheduler);
 
-  app.listen(PORT, () => {
+  const server = app.listen(PORT, () => {
     console.log(`
 ╔════════════════════════════════════════════════════════════╗
-║  Credential Broker v2.1 - Plugin Architecture             ║
+║  Credential Broker v2.2 - Plugin Architecture             ║
 ║  Port: ${PORT}                                                 ║
 ╚════════════════════════════════════════════════════════════╝
 
-✨ Plugin-Based Secret Providers
+Plugin-Based Secret Providers
    Add new providers by creating *-provider.js files!
 
-🔄 Lifecycle API:
-   POST /v1/credentials/:id/rotate     → trigger rotation
-   GET  /v1/credentials/:id/history    → rotation history
-   POST /v1/credentials/:id/revoke     → revoke credential
-   GET  /v1/credentials/stale          → list stale credentials
-   POST /v1/credentials/migrate        → cross-provider migration
-   GET  /v1/credentials/providers      → provider capabilities
-   POST /v1/credentials/dynamic        → generate dynamic secret
+Lifecycle API:
+   POST /v1/credentials/:id/rotate     -> trigger rotation
+   GET  /v1/credentials/:id/history    -> rotation history
+   POST /v1/credentials/:id/revoke     -> revoke credential
+   GET  /v1/credentials/stale          -> list stale credentials
+   POST /v1/credentials/migrate        -> cross-provider migration
+   GET  /v1/credentials/providers      -> provider capabilities
+   POST /v1/credentials/dynamic        -> generate dynamic secret
 
-Ready! 🚀
+Rotation Policies:
+   GET    /v1/credentials/policies         -> list policies
+   PUT    /v1/credentials/policies/:path   -> set policy
+   DELETE /v1/credentials/policies/:path   -> remove policy
+
+Convenience API:
+   POST /api/v1/credentials/rotate          -> trigger rotation
+   GET  /api/v1/credentials/rotation-status -> schedule + history
+   GET  /api/v1/providers                   -> providers + health
+
+Ready!
 `);
 
     // Start rotation scheduler (after server is listening)
-    if (dbClient) {
+    if (pool) {
       scheduler.start();
     }
+
+    // Graceful shutdown: drain pool connections
+    const shutdown = async (signal) => {
+      console.log(`\n${signal} received — shutting down credential-broker`);
+      server.close();
+      if (pool) await pool.end();
+      process.exit(0);
+    };
+    process.on('SIGTERM', () => shutdown('SIGTERM'));
+    process.on('SIGINT', () => shutdown('SIGINT'));
   });
 }
 

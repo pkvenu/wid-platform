@@ -13,19 +13,31 @@ class RotationScheduler {
     this.defaultMaxAgeDays = config.defaultMaxAgeDays || 90;
     this.evaluationInterval = config.evaluationInterval || 3600000; // 1 hour
     this._timer = null;
+    // Per-secret rotation policies loaded from DB at startup
+    this._policies = new Map(); // credential_path -> { max_age_days, auto_rotate, provider, notify_before_days }
   }
 
   // ── Start / Stop ──────────────────────────────────────────────────────
 
   start() {
     console.log(`[RotationScheduler] Started (eval every ${this.evaluationInterval / 1000}s, max age ${this.defaultMaxAgeDays}d)`);
-    // Initial evaluation after 30s
-    setTimeout(() => this.evaluateAll().catch(e =>
-      console.warn('[RotationScheduler] Initial evaluation failed:', e.message)
-    ), 30000);
-    this._timer = setInterval(() => this.evaluateAll().catch(e =>
-      console.warn('[RotationScheduler] Periodic evaluation failed:', e.message)
-    ), this.evaluationInterval);
+    // Load policies then run initial evaluation after 30s
+    setTimeout(async () => {
+      try {
+        await this.loadPolicies();
+        await this.evaluateAll();
+      } catch (e) {
+        console.warn('[RotationScheduler] Initial startup failed:', e.message);
+      }
+    }, 30000);
+    this._timer = setInterval(async () => {
+      try {
+        await this.loadPolicies();
+        await this.evaluateAll();
+      } catch (e) {
+        console.warn('[RotationScheduler] Periodic evaluation failed:', e.message);
+      }
+    }, this.evaluationInterval);
   }
 
   stop() {
@@ -84,6 +96,8 @@ class RotationScheduler {
 
   async isStale(credentialPath) {
     if (!this.db) return false;
+    const maxAge = this.getMaxAgeDays(credentialPath);
+
     try {
       const { rows } = await this.db.query(
         `SELECT executed_at FROM credential_rotations
@@ -101,12 +115,12 @@ class RotationScheduler {
         );
         if (!usage[0]?.first_seen) return false;
         const ageDays = (Date.now() - new Date(usage[0].first_seen).getTime()) / 86400000;
-        return ageDays > this.defaultMaxAgeDays;
+        return ageDays > maxAge;
       }
 
       const lastRotation = new Date(rows[0].executed_at);
       const ageDays = (Date.now() - lastRotation.getTime()) / 86400000;
-      return ageDays > this.defaultMaxAgeDays;
+      return ageDays > maxAge;
     } catch {
       return false;
     }
@@ -289,6 +303,119 @@ class RotationScheduler {
       source: { provider: fromProvider, path: credentialPath },
       destination: { provider: toProvider, path: targetPath, version: result.version },
     };
+  }
+
+  // ── Rotation Policies ────────────────────────────────────────────────
+
+  async loadPolicies() {
+    if (!this.db) return;
+    try {
+      const { rows } = await this.db.query(
+        'SELECT * FROM rotation_policies WHERE enabled = true'
+      );
+      this._policies.clear();
+      for (const row of rows) {
+        this._policies.set(row.credential_path, {
+          id: row.id,
+          max_age_days: row.max_age_days,
+          auto_rotate: row.auto_rotate,
+          provider: row.provider,
+          notify_before_days: row.notify_before_days,
+          created_at: row.created_at,
+        });
+      }
+      if (rows.length > 0) {
+        console.log(`[RotationScheduler] Loaded ${rows.length} rotation policies`);
+      }
+    } catch (e) {
+      // Table may not exist yet — that is fine
+      if (!e.message.includes('does not exist')) {
+        console.warn('[RotationScheduler] Failed to load policies:', e.message);
+      }
+    }
+  }
+
+  getPolicyForPath(credentialPath) {
+    // Exact match first, then prefix match
+    if (this._policies.has(credentialPath)) return this._policies.get(credentialPath);
+    for (const [pattern, policy] of this._policies) {
+      if (pattern.endsWith('*') && credentialPath.startsWith(pattern.slice(0, -1))) {
+        return policy;
+      }
+    }
+    return null;
+  }
+
+  getMaxAgeDays(credentialPath) {
+    const policy = this.getPolicyForPath(credentialPath);
+    return policy?.max_age_days || this.defaultMaxAgeDays;
+  }
+
+  async setPolicy(credentialPath, opts = {}) {
+    if (!this.db) throw new Error('Database not connected');
+    const maxAgeDays = opts.max_age_days || this.defaultMaxAgeDays;
+    const autoRotate = opts.auto_rotate !== undefined ? opts.auto_rotate : true;
+    const provider = opts.provider || this._detectProvider(credentialPath);
+    const notifyBeforeDays = opts.notify_before_days || 7;
+
+    const { rows } = await this.db.query(`
+      INSERT INTO rotation_policies
+        (credential_path, provider, max_age_days, auto_rotate, notify_before_days)
+      VALUES ($1, $2, $3, $4, $5)
+      ON CONFLICT (credential_path) DO UPDATE SET
+        provider = EXCLUDED.provider,
+        max_age_days = EXCLUDED.max_age_days,
+        auto_rotate = EXCLUDED.auto_rotate,
+        notify_before_days = EXCLUDED.notify_before_days,
+        updated_at = NOW()
+      RETURNING *
+    `, [credentialPath, provider, maxAgeDays, autoRotate, notifyBeforeDays]);
+
+    // Update in-memory cache
+    const row = rows[0];
+    this._policies.set(credentialPath, {
+      id: row.id,
+      max_age_days: row.max_age_days,
+      auto_rotate: row.auto_rotate,
+      provider: row.provider,
+      notify_before_days: row.notify_before_days,
+      created_at: row.created_at,
+    });
+
+    console.log(`[RotationScheduler] Policy set: ${credentialPath} (${maxAgeDays}d, auto=${autoRotate})`);
+    return row;
+  }
+
+  async deletePolicy(credentialPath) {
+    if (!this.db) throw new Error('Database not connected');
+    await this.db.query('DELETE FROM rotation_policies WHERE credential_path = $1', [credentialPath]);
+    this._policies.delete(credentialPath);
+  }
+
+  async listPolicies() {
+    if (!this.db) return [];
+    const { rows } = await this.db.query('SELECT * FROM rotation_policies ORDER BY credential_path');
+    return rows;
+  }
+
+  // ── Rotation status summary ─────────────────────────────────────────
+
+  async getRotationStatus() {
+    if (!this.db) return { policies: [], pending: [], recent: [] };
+
+    const [policies, pending, recent] = await Promise.all([
+      this.listPolicies(),
+      this.listPending(),
+      this.db.query(`
+        SELECT credential_path, provider, status, old_version, new_version,
+               triggered_by, executed_at, created_at
+        FROM credential_rotations
+        WHERE executed_at > NOW() - INTERVAL '30 days'
+        ORDER BY executed_at DESC LIMIT 50
+      `).then(r => r.rows).catch(() => []),
+    ]);
+
+    return { policies, pending, recent };
   }
 
   // ── Helpers ───────────────────────────────────────────────────────────

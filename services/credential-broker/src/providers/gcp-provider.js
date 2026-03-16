@@ -139,6 +139,19 @@ class GCPProvider extends BaseSecretProvider {
   supportsRotation() { return true; }
   supportsRevocation() { return true; }
 
+  async healthCheck() {
+    if (!this.enabled) return false;
+    try {
+      // Verify connection by listing secrets with a page size of 1
+      const parent = `projects/${this.config.projectId}`;
+      await this.client.listSecrets({ parent, pageSize: 1 });
+      return true;
+    } catch (error) {
+      this.error(`Health check failed: ${error.message}`);
+      return false;
+    }
+  }
+
   getSafeConfig() {
     return {
       projectId: this.config.projectId

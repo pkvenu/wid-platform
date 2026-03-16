@@ -38,6 +38,36 @@ class CredentialCache {
   getTTL() {
     return CACHE_TTL;
   }
+
+  // --- Tenant-scoped helpers ---
+
+  /**
+   * Get a cached value scoped to a specific tenant.
+   * @param {string} tenantId
+   * @param {string} key - e.g. "stripe:credentials/stripe/api-key"
+   */
+  tenantGet(tenantId, key) {
+    return this.cache.get(`t:${tenantId}:${key}`);
+  }
+
+  /**
+   * Set a cached value scoped to a specific tenant.
+   * @param {string} tenantId
+   * @param {string} key
+   * @param {*} value
+   */
+  tenantSet(tenantId, key, value) {
+    return this.cache.set(`t:${tenantId}:${key}`, value);
+  }
+
+  /**
+   * Delete a tenant-scoped cached value.
+   * @param {string} tenantId
+   * @param {string} key
+   */
+  tenantDel(tenantId, key) {
+    return this.cache.del(`t:${tenantId}:${key}`);
+  }
 }
 
 module.exports = new CredentialCache();

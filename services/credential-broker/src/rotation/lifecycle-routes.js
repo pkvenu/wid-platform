@@ -213,6 +213,48 @@ function mountLifecycleRoutes(app, dbClient, providerManager, scheduler) {
       res.status(500).json({ error: err.message });
     }
   });
+  // ── GET /v1/credentials/policies — List rotation policies ─────────────
+  app.get('/v1/credentials/policies', async (req, res) => {
+    try {
+      const policies = await scheduler.listPolicies();
+      res.json({ policies, total: policies.length });
+    } catch (err) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  // ── PUT /v1/credentials/policies/:path — Set rotation policy ────────
+  app.put('/v1/credentials/policies/:path', async (req, res) => {
+    try {
+      const credentialPath = decodeURIComponent(req.params.path);
+      const { max_age_days, auto_rotate, provider, notify_before_days } = req.body || {};
+
+      const policy = await scheduler.setPolicy(credentialPath, {
+        max_age_days,
+        auto_rotate,
+        provider,
+        notify_before_days,
+      });
+
+      res.json({
+        message: `Rotation policy set for "${credentialPath}"`,
+        policy,
+      });
+    } catch (err) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  // ── DELETE /v1/credentials/policies/:path — Remove rotation policy ──
+  app.delete('/v1/credentials/policies/:path', async (req, res) => {
+    try {
+      const credentialPath = decodeURIComponent(req.params.path);
+      await scheduler.deletePolicy(credentialPath);
+      res.json({ message: `Rotation policy removed for "${credentialPath}"` });
+    } catch (err) {
+      res.status(500).json({ error: err.message });
+    }
+  });
 }
 
 module.exports = { mountLifecycleRoutes };

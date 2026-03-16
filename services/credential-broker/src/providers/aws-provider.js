@@ -149,6 +149,18 @@ class AWSProvider extends BaseSecretProvider {
   supportsRotation() { return true; }
   supportsRevocation() { return true; }
 
+  async healthCheck() {
+    if (!this.enabled) return false;
+    try {
+      // Verify connection by listing secrets with a max of 1
+      await this.client.send(new ListSecretsCommand({ MaxResults: 1 }));
+      return true;
+    } catch (error) {
+      this.error(`Health check failed: ${error.message}`);
+      return false;
+    }
+  }
+
   getSafeConfig() {
     return {
       region: this.config.region,
