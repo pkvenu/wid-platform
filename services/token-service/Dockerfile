@@ -4,7 +4,7 @@ COPY package*.json ./
 RUN npm install --production
 COPY src/ ./src/
 COPY keys/ ./keys/
-# Shared module: agent-card-signer (placed at /shared/ to match require paths)
-COPY agent-card-signer.js /shared/agent-card-signer.js
+# Shared modules (copied into service dir for Docker builds)
+COPY shared/ ./shared/
 EXPOSE 3000
 CMD ["npm", "start"]

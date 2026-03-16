@@ -4,30 +4,39 @@
 // =============================================================================
 
 const express = require('express');
-const { Client } = require('pg');
 const axios = require('axios');
 const jwt = require('jsonwebtoken');
 const { buildNHIContext, ACTIONS, AUTH_METHODS, validateCapability } = require('./canonical-nhi-context');
 const tokenCrypto = require('./crypto');
+const { createTenantPool, systemQuery } = require('./shared-loader').tenantDb;
+const securityHeaders = require('./shared-loader').securityHeaders;
+const { apiRateLimiter } = require('./shared-loader').rateLimitMiddleware;
 
 const app = express();
+
+// Security headers (P2.6) — set on every response
+app.use(securityHeaders());
+
 app.use(express.json());
 
+// Rate limiting (P2.6) — 300 req/min per tenant for API routes
+app.use(apiRateLimiter());
+
 const PORT = process.env.PORT || 3000;
-const DATABASE_URL = process.env.DATABASE_URL || 'postgresql://wip_user:wip_password@postgres:5432/workload_identity';
 const OPA_URL = process.env.OPA_URL || 'http://opa:8181';
 
-let dbClient = null;
+let pool = null;
 
 // =============================================================================
-// Database Connection
+// Database Connection (pg.Pool via shared tenant-db module)
 // =============================================================================
 
 async function initDatabase() {
   try {
-    dbClient = new Client({ connectionString: DATABASE_URL });
-    await dbClient.connect();
-    console.log('✅ Connected to database');
+    pool = createTenantPool();
+    // Verify connectivity
+    await pool.query('SELECT 1');
+    console.log('✅ Connected to database (pool)');
   } catch (error) {
     console.error('❌ Database connection failed:', error.message);
     process.exit(1);
@@ -290,7 +299,7 @@ async function resolveCallerIdentity(req) {
 }
 
 async function loadWorkload(identity) {
-  const result = await dbClient.query(`
+  const result = await pool.query(`
     SELECT 
       id, spiffe_id, name, type, namespace, environment,
       trust_domain, issuer, cluster_id, cloud_provider, region, account_id,
@@ -375,7 +384,7 @@ async function issueToken({ subject, audience, capability, scopes, workload, par
 
   if (parent_jti) {
     try {
-      const parentRow = await dbClient.query(
+      const parentRow = await pool.query(
         'SELECT root_jti, chain_depth, subject FROM token_chain WHERE jti = $1 AND revoked = FALSE AND expires_at > NOW()',
         [parent_jti]
       );
@@ -421,7 +430,7 @@ async function issueToken({ subject, audience, capability, scopes, workload, par
 
   // Record in token_chain table for OBO tracking
   try {
-    await dbClient.query(`
+    await pool.query(`
       INSERT INTO token_chain (
         jti, parent_jti, root_jti, chain_depth,
         subject, audience, actor, scopes,
@@ -463,7 +472,7 @@ async function issueToken({ subject, audience, capability, scopes, workload, par
 async function auditDecision(entry) {
   try {
     const decisionId = `dec_${Date.now()}_${Math.random().toString(36).substr(2, 6)}`;
-    await dbClient.query(`
+    await pool.query(`
       INSERT INTO ext_authz_decisions (
         decision_id, source_principal, destination_principal,
         source_name, destination_name,
@@ -545,7 +554,7 @@ app.post('/v1/token/validate', async (req, res) => {
     return res.status(400).json({ valid: false, error: 'Missing token_jti' });
   }
   try {
-    const result = await dbClient.query(
+    const result = await pool.query(
       'SELECT jti, subject, audience, scopes, chain_depth, revoked, expires_at FROM token_chain WHERE jti = $1',
       [token_jti]
     );
@@ -579,7 +588,7 @@ app.post('/v1/token/validate', async (req, res) => {
 // Get full chain for a token (walk up to root)
 app.get('/v1/tokens/chain/:jti', async (req, res) => {
   try {
-    const result = await dbClient.query('SELECT * FROM get_token_chain($1)', [req.params.jti]);
+    const result = await pool.query('SELECT * FROM get_token_chain($1)', [req.params.jti]);
     res.json({ chain: result.rows, total: result.rows.length });
   } catch (err) {
     console.error('Chain query error:', err.message);
@@ -590,7 +599,7 @@ app.get('/v1/tokens/chain/:jti', async (req, res) => {
 // Get all descendants of a token (walk down from root)
 app.get('/v1/tokens/descendants/:jti', async (req, res) => {
   try {
-    const result = await dbClient.query('SELECT * FROM get_token_descendants($1)', [req.params.jti]);
+    const result = await pool.query('SELECT * FROM get_token_descendants($1)', [req.params.jti]);
     res.json({ descendants: result.rows, total: result.rows.length });
   } catch (err) {
     console.error('Descendants query error:', err.message);
@@ -601,7 +610,7 @@ app.get('/v1/tokens/descendants/:jti', async (req, res) => {
 // Active chains summary
 app.get('/v1/tokens/chains/active', async (req, res) => {
   try {
-    const result = await dbClient.query('SELECT * FROM v_active_token_chains LIMIT 100');
+    const result = await pool.query('SELECT * FROM v_active_token_chains LIMIT 100');
     res.json({ chains: result.rows, total: result.rows.length });
   } catch (err) {
     console.error('Active chains query error:', err.message);
@@ -612,7 +621,7 @@ app.get('/v1/tokens/chains/active', async (req, res) => {
 // Token chain stats per subject
 app.get('/v1/tokens/chains/stats', async (req, res) => {
   try {
-    const result = await dbClient.query('SELECT * FROM v_token_chain_stats LIMIT 100');
+    const result = await pool.query('SELECT * FROM v_token_chain_stats LIMIT 100');
     res.json({ stats: result.rows });
   } catch (err) {
     console.error('Chain stats query error:', err.message);
@@ -626,7 +635,7 @@ app.post('/v1/tokens/revoke', async (req, res) => {
   if (!jti) return res.status(400).json({ error: 'Missing jti' });
   try {
     // Revoke this token and all descendants
-    const result = await dbClient.query(`
+    const result = await pool.query(`
       UPDATE token_chain SET revoked = TRUE, revoked_at = NOW()
       WHERE jti IN (SELECT d.jti FROM get_token_descendants($1) d)
         AND revoked = FALSE
@@ -689,7 +698,7 @@ app.post('/api/v1/agent-card/sign', async (req, res) => {
       });
     }
 
-    const { signAgentCard } = require('../../../shared/agent-card-signer');
+    const { signAgentCard } = require('./shared-loader').agentCardSigner;
     const kid = tokenCrypto.getKid();
     const jws = signAgentCard(card, privateKeyPem, {
       kid,
@@ -730,11 +739,21 @@ app.get('/health', (req, res) => {
 
 (async () => {
   await initDatabase();
-  
-  app.listen(PORT, () => {
+
+  const server = app.listen(PORT, () => {
     console.log(`✅ Token service running on port ${PORT}`);
     console.log(`🔒 Trust gate enabled - all requests require OPA approval`);
   });
+
+  // Graceful shutdown: drain pool connections
+  const shutdown = async (signal) => {
+    console.log(`\n${signal} received — shutting down token-service`);
+    server.close();
+    if (pool) await pool.end();
+    process.exit(0);
+  };
+  process.on('SIGTERM', () => shutdown('SIGTERM'));
+  process.on('SIGINT', () => shutdown('SIGINT'));
 })();
 
 module.exports = app;

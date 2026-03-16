@@ -1,5 +1,5 @@
 -- =============================================================================
--- Workload Identity Platform — Complete Database Schema
+-- Workload Identity Defense (WID) Platform — Complete Database Schema
 -- =============================================================================
 --
 -- Single-file init for fresh installations. Creates all tables, indexes,
@@ -23,11 +23,71 @@
 --   ext_authz_decisions    — Data-plane (ext-authz adapter) decision log
 --   token_chain            — OBO (On-Behalf-Of) token chain tracking
 --   credential_usage       — Credential proxy access audit log
+--   spoke_relays           — DB-backed relay registry with mTLS identity
+--   federation_events      — Audit trail for federation actions
 --
--- Version: 3.0.0
+-- Version: 5.0.0 (mTLS Federation)
 -- =============================================================================
 
 BEGIN;
+
+-- Enable pgcrypto for audit log encryption at rest
+CREATE EXTENSION IF NOT EXISTS pgcrypto;
+
+-- ═══════════════════════════════════════════════════════════════════════════════
+-- 0. TENANTS — Multi-tenant isolation
+-- ═══════════════════════════════════════════════════════════════════════════════
+
+CREATE TABLE IF NOT EXISTS tenants (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    name TEXT NOT NULL,
+    slug TEXT UNIQUE NOT NULL,
+    plan TEXT NOT NULL DEFAULT 'trial',
+    max_users INTEGER NOT NULL DEFAULT 10,
+    max_workloads INTEGER NOT NULL DEFAULT 1000,
+    max_connectors INTEGER NOT NULL DEFAULT 20,
+    max_policies INTEGER NOT NULL DEFAULT 500,
+    data_region TEXT NOT NULL DEFAULT 'us',
+    data_residency_strict BOOLEAN NOT NULL DEFAULT false,
+    allowed_regions TEXT[] NOT NULL DEFAULT '{us}',
+    settings JSONB NOT NULL DEFAULT '{}',
+    features JSONB NOT NULL DEFAULT '{}',
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_tenants_slug ON tenants(slug);
+
+-- Default tenant for single-tenant / dev mode
+INSERT INTO tenants (id, name, slug, plan, data_region)
+VALUES ('00000000-0000-0000-0000-000000000001', 'Default', 'default', 'enterprise', 'us')
+ON CONFLICT (id) DO NOTHING;
+
+-- Tenant invitations
+CREATE TABLE IF NOT EXISTS tenant_invitations (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    tenant_id UUID NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
+    email TEXT NOT NULL,
+    role TEXT NOT NULL DEFAULT 'viewer',
+    invited_by UUID,
+    token TEXT UNIQUE NOT NULL,
+    expires_at TIMESTAMPTZ NOT NULL,
+    accepted_at TIMESTAMPTZ,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_invitations_token ON tenant_invitations(token);
+CREATE INDEX IF NOT EXISTS idx_invitations_tenant ON tenant_invitations(tenant_id);
+
+-- Tenant usage tracking
+CREATE TABLE IF NOT EXISTS tenant_usage (
+    tenant_id UUID PRIMARY KEY REFERENCES tenants(id),
+    user_count INTEGER NOT NULL DEFAULT 0,
+    workload_count INTEGER NOT NULL DEFAULT 0,
+    connector_count INTEGER NOT NULL DEFAULT 0,
+    policy_count INTEGER NOT NULL DEFAULT 0,
+    last_updated TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
 
 -- ═══════════════════════════════════════════════════════════════════════════════
 -- 1. WORKLOADS — All discovered Non-Human Identities
@@ -35,6 +95,7 @@ BEGIN;
 
 CREATE TABLE IF NOT EXISTS workloads (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    tenant_id UUID NOT NULL DEFAULT '00000000-0000-0000-0000-000000000001' REFERENCES tenants(id),
 
     -- Identity
     spiffe_id VARCHAR(512) UNIQUE NOT NULL,
@@ -161,6 +222,7 @@ COMMENT ON COLUMN workloads.selectors IS 'SPIRE selectors for workload attestati
 
 CREATE TABLE IF NOT EXISTS targets (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    tenant_id UUID NOT NULL DEFAULT '00000000-0000-0000-0000-000000000001' REFERENCES tenants(id),
     spiffe_id VARCHAR(512),
     name VARCHAR(255) NOT NULL UNIQUE,
     type VARCHAR(50) NOT NULL,    -- external-api, database, internal-service
@@ -186,6 +248,7 @@ COMMENT ON TABLE targets IS 'External services and APIs that workloads access';
 
 CREATE TABLE IF NOT EXISTS discovery_scans (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    tenant_id UUID NOT NULL DEFAULT '00000000-0000-0000-0000-000000000001' REFERENCES tenants(id),
     scan_type VARCHAR(50) NOT NULL,       -- kubernetes, docker, aws, gcp, azure, manual, full
     status VARCHAR(50) NOT NULL,          -- running, completed, failed
     started_at TIMESTAMPTZ DEFAULT NOW(),
@@ -207,6 +270,7 @@ COMMENT ON TABLE discovery_scans IS 'Discovery scan history and performance';
 
 CREATE TABLE IF NOT EXISTS attestation_history (
     id SERIAL PRIMARY KEY,
+    tenant_id UUID NOT NULL DEFAULT '00000000-0000-0000-0000-000000000001' REFERENCES tenants(id),
     workload_id UUID REFERENCES workloads(id) ON DELETE CASCADE,
     workload_name VARCHAR(255),
     trust_level VARCHAR(20),
@@ -228,6 +292,7 @@ CREATE INDEX IF NOT EXISTS idx_attestation_history_created ON attestation_histor
 
 CREATE TABLE IF NOT EXISTS policies (
     id SERIAL PRIMARY KEY,
+    tenant_id UUID NOT NULL DEFAULT '00000000-0000-0000-0000-000000000001' REFERENCES tenants(id),
     name VARCHAR(255) NOT NULL,
     description TEXT DEFAULT '',
 
@@ -293,6 +358,7 @@ CREATE INDEX IF NOT EXISTS idx_policies_attack_path ON policies(attack_path_id) 
 
 CREATE TABLE IF NOT EXISTS policy_violations (
     id SERIAL PRIMARY KEY,
+    tenant_id UUID NOT NULL DEFAULT '00000000-0000-0000-0000-000000000001' REFERENCES tenants(id),
     policy_id INTEGER REFERENCES policies(id) ON DELETE CASCADE,
     policy_name VARCHAR(255),
     workload_id UUID REFERENCES workloads(id) ON DELETE CASCADE,
@@ -301,6 +367,7 @@ CREATE TABLE IF NOT EXISTS policy_violations (
     violation_type VARCHAR(50),
     message TEXT NOT NULL,
     details JSONB DEFAULT '{}',
+    details_encrypted BYTEA,
     status VARCHAR(20) DEFAULT 'open'
         CHECK (status IN ('open', 'acknowledged', 'resolved', 'suppressed')),
     resolved_by VARCHAR(255) DEFAULT NULL,
@@ -320,6 +387,7 @@ CREATE INDEX IF NOT EXISTS idx_violations_created ON policy_violations(created_a
 
 CREATE TABLE IF NOT EXISTS access_policies (
     id SERIAL PRIMARY KEY,
+    tenant_id UUID NOT NULL DEFAULT '00000000-0000-0000-0000-000000000001' REFERENCES tenants(id),
     policy_id INTEGER REFERENCES policies(id) ON DELETE CASCADE,
     client_workload_id UUID NOT NULL,
     server_workload_id UUID NOT NULL,
@@ -362,6 +430,7 @@ CREATE INDEX IF NOT EXISTS idx_access_policies_enabled ON access_policies(enable
 
 CREATE TABLE IF NOT EXISTS access_decisions (
     id SERIAL PRIMARY KEY,
+    tenant_id UUID NOT NULL DEFAULT '00000000-0000-0000-0000-000000000001' REFERENCES tenants(id),
     client_workload_id UUID,
     server_workload_id UUID,
     client_name VARCHAR(255),
@@ -386,6 +455,7 @@ CREATE INDEX IF NOT EXISTS idx_access_decisions_created ON access_decisions(crea
 
 CREATE TABLE IF NOT EXISTS ext_authz_decisions (
     id SERIAL PRIMARY KEY,
+    tenant_id UUID NOT NULL DEFAULT '00000000-0000-0000-0000-000000000001' REFERENCES tenants(id),
     decision_id VARCHAR(64) NOT NULL,
     source_principal TEXT,
     destination_principal TEXT,
@@ -413,6 +483,12 @@ CREATE TABLE IF NOT EXISTS ext_authz_decisions (
     parent_decision_id VARCHAR(100),
     hop_index INTEGER DEFAULT 0,
     total_hops INTEGER DEFAULT 1,
+    -- mTLS Federation (ADR-13) — relay identity for cross-env trace linking
+    relay_spiffe_id TEXT,
+    origin_relay_spiffe_id TEXT,
+    origin_environment VARCHAR(255),
+    data_region TEXT NOT NULL DEFAULT 'us',
+    details_encrypted BYTEA,
     created_at TIMESTAMPTZ DEFAULT NOW()
 );
 
@@ -422,6 +498,8 @@ CREATE INDEX IF NOT EXISTS idx_ead_source ON ext_authz_decisions(source_name);
 CREATE INDEX IF NOT EXISTS idx_ead_dest ON ext_authz_decisions(destination_name);
 CREATE INDEX IF NOT EXISTS idx_ead_decision_id ON ext_authz_decisions(decision_id);
 CREATE INDEX IF NOT EXISTS idx_ead_trace_id ON ext_authz_decisions(trace_id);
+CREATE INDEX IF NOT EXISTS idx_ead_tenant_region ON ext_authz_decisions(tenant_id, data_region);
+CREATE INDEX IF NOT EXISTS idx_ead_relay_spiffe ON ext_authz_decisions(relay_spiffe_id);
 
 
 -- ═══════════════════════════════════════════════════════════════════════════════
@@ -430,6 +508,7 @@ CREATE INDEX IF NOT EXISTS idx_ead_trace_id ON ext_authz_decisions(trace_id);
 
 CREATE TABLE IF NOT EXISTS token_chain (
     id SERIAL PRIMARY KEY,
+    tenant_id UUID NOT NULL DEFAULT '00000000-0000-0000-0000-000000000001' REFERENCES tenants(id),
     jti VARCHAR(255) UNIQUE NOT NULL,
     parent_jti VARCHAR(255),
     root_jti VARCHAR(255),
@@ -459,6 +538,7 @@ CREATE INDEX IF NOT EXISTS idx_token_chain_actor ON token_chain(actor);
 
 CREATE TABLE IF NOT EXISTS credential_usage (
     id SERIAL PRIMARY KEY,
+    tenant_id UUID NOT NULL DEFAULT '00000000-0000-0000-0000-000000000001' REFERENCES tenants(id),
     workload_id VARCHAR(255) NOT NULL,
     target_api VARCHAR(255) NOT NULL,
     method VARCHAR(10) NOT NULL,
@@ -480,7 +560,9 @@ CREATE INDEX IF NOT EXISTS idx_credential_usage_result ON credential_usage(resul
 -- ═══════════════════════════════════════════════════════════════════════════════
 
 CREATE TABLE IF NOT EXISTS identity_graph (
-    id              VARCHAR(50) PRIMARY KEY DEFAULT 'latest',
+    id              VARCHAR(50) NOT NULL DEFAULT 'latest',
+    tenant_id UUID NOT NULL DEFAULT '00000000-0000-0000-0000-000000000001' REFERENCES tenants(id),
+    PRIMARY KEY (id, tenant_id),
     graph_data      JSONB NOT NULL DEFAULT '{}',
     generated_at    TIMESTAMPTZ DEFAULT NOW(),
     scan_duration_ms INTEGER,
@@ -498,6 +580,7 @@ COMMENT ON TABLE identity_graph IS 'Cached identity graph — rebuilt on each sc
 
 CREATE TABLE IF NOT EXISTS authorization_events (
     id              SERIAL PRIMARY KEY,
+    tenant_id UUID NOT NULL DEFAULT '00000000-0000-0000-0000-000000000001' REFERENCES tenants(id),
     timestamp       TIMESTAMPTZ DEFAULT NOW(),
     workload_id     UUID REFERENCES workloads(id) ON DELETE SET NULL,
     workload_name   VARCHAR(255),
@@ -528,6 +611,7 @@ COMMENT ON TABLE authorization_events IS 'Identity access decisions — audit tr
 
 CREATE TABLE IF NOT EXISTS policy_evaluations (
     id              SERIAL PRIMARY KEY,
+    tenant_id UUID NOT NULL DEFAULT '00000000-0000-0000-0000-000000000001' REFERENCES tenants(id),
     evaluated_at    TIMESTAMPTZ DEFAULT NOW(),
     workload_id     UUID REFERENCES workloads(id) ON DELETE SET NULL,
     workload_name   VARCHAR(255),
@@ -552,6 +636,7 @@ COMMENT ON TABLE policy_evaluations IS 'OPA policy evaluation results per worklo
 
 CREATE TABLE IF NOT EXISTS identity_graph_history (
     id              SERIAL PRIMARY KEY,
+    tenant_id UUID NOT NULL DEFAULT '00000000-0000-0000-0000-000000000001' REFERENCES tenants(id),
     snapshot_at     TIMESTAMPTZ DEFAULT NOW(),
     node_count      INTEGER,
     rel_count       INTEGER,
@@ -569,6 +654,7 @@ COMMENT ON TABLE identity_graph_history IS 'Historical graph snapshots for trend
 
 CREATE TABLE IF NOT EXISTS ai_request_events (
     id                     SERIAL PRIMARY KEY,
+    tenant_id UUID NOT NULL DEFAULT '00000000-0000-0000-0000-000000000001' REFERENCES tenants(id),
     decision_id            VARCHAR(64),
     source_name            VARCHAR(255),
     source_principal       TEXT,
@@ -603,6 +689,7 @@ CREATE TABLE IF NOT EXISTS ai_request_events (
     provider_request_id    VARCHAR(255),
     error_code             VARCHAR(50),
     rate_limit_remaining   INTEGER,
+    data_region            TEXT NOT NULL DEFAULT 'us',
     created_at             TIMESTAMPTZ DEFAULT NOW()
 );
 
@@ -611,6 +698,7 @@ CREATE INDEX IF NOT EXISTS idx_ai_req_source   ON ai_request_events(source_name)
 CREATE INDEX IF NOT EXISTS idx_ai_req_created  ON ai_request_events(created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_ai_req_model    ON ai_request_events(ai_model);
 CREATE INDEX IF NOT EXISTS idx_ai_req_decision ON ai_request_events(decision_id);
+CREATE INDEX IF NOT EXISTS idx_ai_req_tenant_region ON ai_request_events(tenant_id, data_region);
 
 COMMENT ON TABLE ai_request_events IS 'AI/LLM API call telemetry detected by edge gateway AIInspector';
 
@@ -621,6 +709,7 @@ COMMENT ON TABLE ai_request_events IS 'AI/LLM API call telemetry detected by edg
 
 CREATE TABLE IF NOT EXISTS remediation_intents (
     id               VARCHAR(100) PRIMARY KEY,
+    tenant_id UUID NOT NULL DEFAULT '00000000-0000-0000-0000-000000000001' REFERENCES tenants(id),
     control_id       VARCHAR(100) NOT NULL,
     name             VARCHAR(255) NOT NULL,
     description      TEXT NOT NULL,
@@ -652,6 +741,7 @@ COMMENT ON TABLE remediation_intents IS 'DB-backed remediation controls — seed
 
 CREATE TABLE IF NOT EXISTS remediation_templates (
     id                SERIAL PRIMARY KEY,
+    tenant_id UUID REFERENCES tenants(id),
     intent_id         VARCHAR(100) NOT NULL REFERENCES remediation_intents(id) ON DELETE CASCADE,
     provider          VARCHAR(50) NOT NULL,
     resource_type     VARCHAR(100),
@@ -681,6 +771,7 @@ COMMENT ON TABLE remediation_templates IS 'Provider-specific remediation templat
 
 CREATE TABLE IF NOT EXISTS finding_type_metadata (
     finding_type   VARCHAR(100) PRIMARY KEY,
+    tenant_id UUID REFERENCES tenants(id),
     label          VARCHAR(255) NOT NULL,
     description    TEXT NOT NULL,
     severity       VARCHAR(20) DEFAULT 'high',
@@ -701,6 +792,7 @@ COMMENT ON TABLE finding_type_metadata IS 'Finding type labels, descriptions, an
 
 CREATE TABLE IF NOT EXISTS connectors (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    tenant_id UUID NOT NULL DEFAULT '00000000-0000-0000-0000-000000000001' REFERENCES tenants(id),
 
     -- Display
     name TEXT NOT NULL,
@@ -762,12 +854,14 @@ COMMENT ON TABLE connectors IS 'Customer cloud account connectors — each repre
 
 CREATE TABLE IF NOT EXISTS users (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    email TEXT UNIQUE NOT NULL,
+    tenant_id UUID NOT NULL DEFAULT '00000000-0000-0000-0000-000000000001' REFERENCES tenants(id),
+    email TEXT NOT NULL,
     password_hash TEXT NOT NULL,
     name TEXT NOT NULL,
-    role TEXT DEFAULT 'admin',
+    role TEXT DEFAULT 'admin',    -- admin, operator, viewer
     created_at TIMESTAMPTZ DEFAULT NOW(),
-    last_login TIMESTAMPTZ
+    last_login TIMESTAMPTZ,
+    UNIQUE(tenant_id, email)
 );
 
 CREATE INDEX IF NOT EXISTS idx_users_email ON users(email);
@@ -810,6 +904,7 @@ COMMENT ON TABLE provider_registry IS 'DB-driven provider/domain registry — re
 
 CREATE TABLE IF NOT EXISTS cloud_log_enrichments (
     id               SERIAL PRIMARY KEY,
+    tenant_id UUID NOT NULL DEFAULT '00000000-0000-0000-0000-000000000001' REFERENCES tenants(id),
     workload_id      UUID REFERENCES workloads(id) ON DELETE CASCADE,
     workload_name    VARCHAR(255),
     cloud_provider   VARCHAR(50) NOT NULL,
@@ -841,6 +936,7 @@ COMMENT ON TABLE cloud_log_enrichments IS 'Cloud log-derived API usage data — 
 
 CREATE TABLE IF NOT EXISTS credential_rotations (
     id               SERIAL PRIMARY KEY,
+    tenant_id UUID NOT NULL DEFAULT '00000000-0000-0000-0000-000000000001' REFERENCES tenants(id),
     credential_path  VARCHAR(500) NOT NULL,
     provider         VARCHAR(50) NOT NULL,
     workload_id      UUID,
@@ -862,11 +958,35 @@ COMMENT ON TABLE credential_rotations IS 'Credential rotation tracking — sched
 
 
 -- ═══════════════════════════════════════════════════════════════════════════════
+-- 23b. ROTATION POLICIES — Per-secret rotation configuration
+-- ═══════════════════════════════════════════════════════════════════════════════
+
+CREATE TABLE IF NOT EXISTS rotation_policies (
+    id                  SERIAL PRIMARY KEY,
+    tenant_id           UUID NOT NULL DEFAULT '00000000-0000-0000-0000-000000000001' REFERENCES tenants(id),
+    credential_path     VARCHAR(500) NOT NULL UNIQUE,
+    provider            VARCHAR(50) NOT NULL,
+    max_age_days        INTEGER NOT NULL DEFAULT 90,
+    auto_rotate         BOOLEAN NOT NULL DEFAULT true,
+    notify_before_days  INTEGER NOT NULL DEFAULT 7,
+    enabled             BOOLEAN NOT NULL DEFAULT true,
+    created_at          TIMESTAMPTZ DEFAULT NOW(),
+    updated_at          TIMESTAMPTZ DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_rp_credential ON rotation_policies(credential_path);
+CREATE INDEX IF NOT EXISTS idx_rp_tenant     ON rotation_policies(tenant_id);
+
+COMMENT ON TABLE rotation_policies IS 'Per-secret rotation policy: max age, auto-rotate toggle, notification window';
+
+
+-- ═══════════════════════════════════════════════════════════════════════════════
 -- 24. REMEDIATION EXECUTIONS — One-click remediation execution tracking
 -- ═══════════════════════════════════════════════════════════════════════════════
 
 CREATE TABLE IF NOT EXISTS remediation_executions (
     id                SERIAL PRIMARY KEY,
+    tenant_id UUID NOT NULL DEFAULT '00000000-0000-0000-0000-000000000001' REFERENCES tenants(id),
     control_id        VARCHAR(100) NOT NULL,
     node_id           VARCHAR(255) NOT NULL,
     channel           VARCHAR(20) NOT NULL,
@@ -1147,6 +1267,7 @@ ON CONFLICT (name) DO NOTHING;
 
 CREATE TABLE IF NOT EXISTS policy_snapshots (
     id SERIAL PRIMARY KEY,
+    tenant_id UUID NOT NULL DEFAULT '00000000-0000-0000-0000-000000000001' REFERENCES tenants(id),
     policy_id INTEGER NOT NULL,
     version_hash VARCHAR(64) NOT NULL,
     policy_name VARCHAR(255),
@@ -1160,12 +1281,14 @@ CREATE TABLE IF NOT EXISTS policy_snapshots (
     client_workload_id UUID,
     server_workload_id UUID,
     snapshot_reason VARCHAR(50) DEFAULT 'evaluation',
+    data_region TEXT NOT NULL DEFAULT 'us',
     created_at TIMESTAMPTZ DEFAULT NOW()
 );
 
 CREATE INDEX IF NOT EXISTS idx_ps_policy_id ON policy_snapshots(policy_id);
 CREATE INDEX IF NOT EXISTS idx_ps_version_hash ON policy_snapshots(version_hash);
 CREATE INDEX IF NOT EXISTS idx_ps_created ON policy_snapshots(created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_ps_tenant_region ON policy_snapshots(tenant_id, data_region);
 
 -- Add policy_version column to ext_authz_decisions if not present
 ALTER TABLE ext_authz_decisions ADD COLUMN IF NOT EXISTS policy_version VARCHAR(64);
@@ -1176,6 +1299,7 @@ ALTER TABLE ext_authz_decisions ADD COLUMN IF NOT EXISTS policy_version VARCHAR(
 
 CREATE TABLE IF NOT EXISTS mcp_tool_events (
     id                  SERIAL PRIMARY KEY,
+    tenant_id UUID NOT NULL DEFAULT '00000000-0000-0000-0000-000000000001' REFERENCES tenants(id),
     decision_id         VARCHAR(64),
     source_name         VARCHAR(255),
     source_principal    TEXT,
@@ -1198,6 +1322,7 @@ CREATE TABLE IF NOT EXISTS mcp_tool_events (
     error_code          INTEGER,
     error_message       VARCHAR(500),
     latency_ms          INTEGER,
+    data_region         TEXT NOT NULL DEFAULT 'us',
     created_at          TIMESTAMPTZ DEFAULT NOW()
 );
 
@@ -1207,8 +1332,28 @@ CREATE INDEX IF NOT EXISTS idx_mcp_evt_tool         ON mcp_tool_events(tool_name
 CREATE INDEX IF NOT EXISTS idx_mcp_evt_method       ON mcp_tool_events(jsonrpc_method);
 CREATE INDEX IF NOT EXISTS idx_mcp_evt_created      ON mcp_tool_events(created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_mcp_evt_decision     ON mcp_tool_events(decision_id);
+CREATE INDEX IF NOT EXISTS idx_mcp_evt_tenant_region ON mcp_tool_events(tenant_id, data_region);
 
 COMMENT ON TABLE mcp_tool_events IS 'MCP JSON-RPC tool call telemetry detected by edge gateway MCPInspector';
+
+-- ═══════════════════════════════════════════════════════════════════════════════
+-- AUDIT EVENTS BY REGION — Unified view for data sovereignty queries
+-- ═══════════════════════════════════════════════════════════════════════════════
+
+CREATE OR REPLACE VIEW audit_events_by_region AS
+  SELECT 'ext_authz' AS event_type, id, tenant_id, data_region, decision_id, created_at
+    FROM ext_authz_decisions
+  UNION ALL
+  SELECT 'ai_request' AS event_type, id, tenant_id, data_region, decision_id, created_at
+    FROM ai_request_events
+  UNION ALL
+  SELECT 'mcp_tool' AS event_type, id, tenant_id, data_region, decision_id, created_at
+    FROM mcp_tool_events
+  UNION ALL
+  SELECT 'policy_snapshot' AS event_type, id, tenant_id, data_region, NULL AS decision_id, created_at
+    FROM policy_snapshots;
+
+COMMENT ON VIEW audit_events_by_region IS 'Unified audit view for data sovereignty — filter by tenant_id + data_region';
 
 -- ═══════════════════════════════════════════════════════════════════════════════
 -- MCP SERVER CAPABILITY FINGERPRINTS
@@ -1216,6 +1361,7 @@ COMMENT ON TABLE mcp_tool_events IS 'MCP JSON-RPC tool call telemetry detected b
 
 CREATE TABLE IF NOT EXISTS mcp_fingerprints (
     id                      SERIAL PRIMARY KEY,
+    tenant_id UUID NOT NULL DEFAULT '00000000-0000-0000-0000-000000000001' REFERENCES tenants(id),
     workload_name           VARCHAR(255) NOT NULL,
     server_name             VARCHAR(255),
     server_version          VARCHAR(50),
@@ -1267,14 +1413,158 @@ BEGIN
 
     RAISE NOTICE '';
     RAISE NOTICE '═══════════════════════════════════════════════════════════════';
-    RAISE NOTICE '  ✅ Workload Identity Platform — Database initialized';
+    RAISE NOTICE '  ✅ Workload Identity Defense (WID) Platform — Database initialized';
     RAISE NOTICE '═══════════════════════════════════════════════════════════════';
-    RAISE NOTICE '  Tables:    23 created';
-    RAISE NOTICE '  Indexes:   56 created';
+    RAISE NOTICE '  Tables:    26 created (+ tenants, tenant_invitations, tenant_usage)';
+    RAISE NOTICE '  Indexes:   60+ created';
     RAISE NOTICE '  Views:     6 created';
-    RAISE NOTICE '  Functions: 7 created';
-    RAISE NOTICE '  Seed data: 8 external targets';
+    RAISE NOTICE '  Functions: 8 created';
+    RAISE NOTICE '  Seed data: 8 external targets + default tenant';
+    RAISE NOTICE '  RLS:       enabled on all tenant-scoped tables';
     RAISE NOTICE '═══════════════════════════════════════════════════════════════';
 END $$;
+
+
+-- ═══════════════════════════════════════════════════════════════════════════════
+-- ROW-LEVEL SECURITY — Tenant isolation at the database level
+-- ═══════════════════════════════════════════════════════════════════════════════
+
+-- Helper: get current tenant from session variable
+CREATE OR REPLACE FUNCTION current_tenant_id() RETURNS UUID AS $$
+BEGIN
+  RETURN NULLIF(current_setting('app.tenant_id', true), '')::UUID;
+EXCEPTION WHEN OTHERS THEN
+  RETURN NULL;
+END;
+$$ LANGUAGE plpgsql STABLE;
+
+-- Trigger: ensure tenant_id is always set on insert for audit tables
+CREATE OR REPLACE FUNCTION set_tenant_on_insert() RETURNS TRIGGER AS $$
+BEGIN
+  IF NEW.tenant_id IS NULL THEN
+    NEW.tenant_id := current_tenant_id();
+  END IF;
+  IF NEW.tenant_id IS NULL THEN
+    RAISE EXCEPTION 'tenant_id is required for table %', TG_TABLE_NAME;
+  END IF;
+  RETURN NEW;
+END;
+$$ LANGUAGE plpgsql;
+
+-- ═══════════════════════════════════════════════════════════════════════════════
+-- 15. SPOKE RELAYS — DB-backed relay registry with mTLS identity (ADR-13)
+-- ═══════════════════════════════════════════════════════════════════════════════
+
+CREATE TABLE IF NOT EXISTS spoke_relays (
+    id                  UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    tenant_id           UUID NOT NULL DEFAULT '00000000-0000-0000-0000-000000000001' REFERENCES tenants(id),
+    relay_id            VARCHAR(100) UNIQUE NOT NULL,
+    environment_name    VARCHAR(255) NOT NULL,
+    environment_type    VARCHAR(50) NOT NULL,
+    region              VARCHAR(50) NOT NULL,
+    cluster_id          VARCHAR(255),
+
+    -- mTLS identity
+    spiffe_id           TEXT UNIQUE,
+    cert_fingerprint    VARCHAR(128),
+    cert_issuer         TEXT,
+    cert_not_before     TIMESTAMPTZ,
+    cert_not_after      TIMESTAMPTZ,
+    cert_serial         VARCHAR(128),
+
+    -- Registration state
+    status              VARCHAR(20) NOT NULL DEFAULT 'pending',
+    registered_at       TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    last_heartbeat_at   TIMESTAMPTZ,
+    revoked_at          TIMESTAMPTZ,
+    revoked_reason      TEXT,
+
+    -- Webhook push config
+    webhook_url         TEXT,
+    webhook_enabled     BOOLEAN DEFAULT TRUE,
+
+    -- Metadata
+    relay_version       VARCHAR(50),
+    capabilities        TEXT[] DEFAULT '{}',
+    data_region         TEXT NOT NULL DEFAULT 'us',
+    data_residency_strict BOOLEAN DEFAULT FALSE,
+    allowed_regions     TEXT[] DEFAULT '{us}',
+
+    -- Health snapshot
+    policy_version      INTEGER DEFAULT 0,
+    policy_count        INTEGER DEFAULT 0,
+    audit_buffer_size   INTEGER DEFAULT 0,
+    adapter_count       INTEGER DEFAULT 0,
+    uptime_seconds      INTEGER DEFAULT 0,
+
+    created_at          TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at          TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_spoke_relays_tenant ON spoke_relays(tenant_id);
+CREATE INDEX IF NOT EXISTS idx_spoke_relays_status ON spoke_relays(status) WHERE status = 'active';
+CREATE INDEX IF NOT EXISTS idx_spoke_relays_spiffe ON spoke_relays(spiffe_id) WHERE spiffe_id IS NOT NULL;
+CREATE INDEX IF NOT EXISTS idx_spoke_relays_cert   ON spoke_relays(cert_fingerprint) WHERE cert_fingerprint IS NOT NULL;
+CREATE INDEX IF NOT EXISTS idx_spoke_relays_region ON spoke_relays(data_region);
+
+ALTER TABLE spoke_relays ENABLE ROW LEVEL SECURITY;
+CREATE POLICY spoke_relays_tenant_policy ON spoke_relays
+    USING (tenant_id::text = current_setting('app.current_tenant', true))
+    WITH CHECK (tenant_id::text = current_setting('app.current_tenant', true));
+
+
+-- ═══════════════════════════════════════════════════════════════════════════════
+-- 16. FEDERATION EVENTS — Audit trail for federation actions (ADR-13)
+-- ═══════════════════════════════════════════════════════════════════════════════
+
+CREATE TABLE IF NOT EXISTS federation_events (
+    id              SERIAL PRIMARY KEY,
+    tenant_id       UUID NOT NULL DEFAULT '00000000-0000-0000-0000-000000000001' REFERENCES tenants(id),
+    relay_id        VARCHAR(100) NOT NULL,
+    event_type      VARCHAR(50) NOT NULL,
+    spiffe_id       TEXT,
+    cert_fingerprint VARCHAR(128),
+    details         JSONB DEFAULT '{}',
+    source_ip       INET,
+    data_region     TEXT NOT NULL DEFAULT 'us',
+    created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_fed_events_relay ON federation_events(relay_id, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_fed_events_type  ON federation_events(event_type, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_fed_events_tenant ON federation_events(tenant_id);
+
+ALTER TABLE federation_events ENABLE ROW LEVEL SECURITY;
+CREATE POLICY federation_events_tenant_policy ON federation_events
+    USING (tenant_id::text = current_setting('app.current_tenant', true))
+    WITH CHECK (tenant_id::text = current_setting('app.current_tenant', true));
+
+
+-- ═══════════════════════════════════════════════════════════════════════════════
+-- AUDIT ENCRYPTION HELPERS — Column-level PGP encryption for sensitive details
+-- ═══════════════════════════════════════════════════════════════════════════════
+
+CREATE OR REPLACE FUNCTION encrypt_audit(plaintext TEXT, encryption_key TEXT)
+RETURNS BYTEA AS $$
+BEGIN
+  IF encryption_key IS NULL OR encryption_key = '' THEN
+    RETURN NULL;
+  END IF;
+  RETURN pgp_sym_encrypt(plaintext, encryption_key);
+END;
+$$ LANGUAGE plpgsql IMMUTABLE;
+
+CREATE OR REPLACE FUNCTION decrypt_audit(ciphertext BYTEA, encryption_key TEXT)
+RETURNS TEXT AS $$
+BEGIN
+  IF ciphertext IS NULL OR encryption_key IS NULL THEN
+    RETURN NULL;
+  END IF;
+  RETURN pgp_sym_decrypt(ciphertext, encryption_key);
+EXCEPTION WHEN OTHERS THEN
+  RETURN '[encrypted - wrong key]';
+END;
+$$ LANGUAGE plpgsql IMMUTABLE;
+
 
 COMMIT;

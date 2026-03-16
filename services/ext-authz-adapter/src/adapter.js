@@ -426,7 +426,7 @@ function createAdminServer(deps) {
 
 async function main() {
   log('info', '═══════════════════════════════════════════════════════');
-  log('info', '  ext_authz Adapter — Workload Identity Platform');
+  log('info', '  ext_authz Adapter — Workload Identity Defense (WID) Platform');
   log('info', `  Mode: ${CONFIG.mode.toUpperCase()} | gRPC: :${CONFIG.grpcPort} | Admin: :${CONFIG.adminPort}`);
   log('info', `  Default: ${CONFIG.defaultMode} | Fail: ${CONFIG.defaultFailBehavior} | Cache: ${CONFIG.cacheEnabled ? 'ON' : 'OFF'}`);
   log('info', `  Policy: ${CONFIG.policyServiceUrl}`);

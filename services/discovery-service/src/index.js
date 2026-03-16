@@ -7,7 +7,10 @@ const cors = require('cors');
 const cookieParser = require('cookie-parser');
 const jwt = require('jsonwebtoken');
 const crypto = require('crypto');
-const { Client } = require('pg');
+const { createTenantPool, tenantQuery, systemQuery } = require('./shared-loader').tenantDb;
+const { enforceDataResidency } = require('./shared-loader').tenantMiddleware;
+const securityHeaders = require('./shared-loader').securityHeaders;
+const { apiRateLimiter } = require('./shared-loader').rateLimitMiddleware;
 const ScannerRegistry = require('./scanners/base/ScannerRegistry');
 const { mountAttestationRoutes } = require('./attestation/attestation-routes');
 const { mountGraphRoutes, refreshGraph, generateBaselinePolicies } = require('./graph/graph-routes');
@@ -136,7 +139,8 @@ function verifyWidToken(token) {
     return { valid: true, payload, spiffe_id: payload.sub, trust_level: payload.wid?.trust_level, wid: payload.wid };
   } catch (e) { return { valid: false, reason: e.message }; }
 }
-const DATABASE_URL = process.env.DATABASE_URL || 'postgresql://wip_user:wip_password@postgres:5432/workload_identity';
+// Security headers (P2.6) — set before CORS so every response gets them
+app.use(securityHeaders());
 
 // CORS — restricted to configured origins (P0.2 fix)
 const ALLOWED_ORIGINS = new Set([
@@ -172,6 +176,7 @@ app.use(cookieParser());
 
 // JWT auth middleware — verify wid_token cookie on protected routes
 const AUTH_JWT_SECRET = process.env.AUTH_JWT_SECRET || 'wid-auth-secret-change-in-production';
+const DEFAULT_TENANT_ID = '00000000-0000-0000-0000-000000000001';
 app.use((req, res, next) => {
   // Skip auth for health, relay (internal), and OPTIONS
   if (req.path === '/health' || req.path.startsWith('/api/v1/relay/') || req.method === 'OPTIONS') {
@@ -182,7 +187,10 @@ app.use((req, res, next) => {
     return res.status(401).json({ error: 'Authentication required' });
   }
   try {
-    req.user = jwt.verify(token, AUTH_JWT_SECRET);
+    const decoded = jwt.verify(token, AUTH_JWT_SECRET);
+    req.user = decoded;
+    // Multi-tenancy: extract tenantId from JWT, default to system tenant
+    req.tenantId = decoded.tenantId || DEFAULT_TENANT_ID;
     next();
   } catch (err) {
     if (err.name === 'TokenExpiredError') {
@@ -193,7 +201,26 @@ app.use((req, res, next) => {
   }
 });
 
+// Tenant-scoped DB middleware — attaches req.db for tenant-scoped queries
+function attachTenantDb(pool) {
+  return (req, res, next) => {
+    const tid = req.tenantId || DEFAULT_TENANT_ID;
+    req.db = {
+      query: (text, params) => tenantQuery(pool, tid, text, params),
+    };
+    req.systemDb = {
+      query: (text, params) => systemQuery(pool, text, params),
+    };
+    next();
+  };
+}
+
 app.use(express.json());
+
+// Rate limiting (P2.6) — 300 req/min per tenant for general API routes
+app.use('/api/', apiRateLimiter());
+
+// Tenant-scoped DB middleware is applied after pool is created in start()
 
 // Scanner configuration
 const awsBase = {
@@ -236,7 +263,7 @@ const SCANNER_CONFIG = {
 };
 
 // Global state
-let dbClient;
+let pool;
 let scannerRegistry;
 let activeScanners = [];
 let discoveryInterval;
@@ -248,44 +275,22 @@ let discoveryInterval;
 async function connectDatabase() {
   console.log(`🔌 Connecting to database...`);
 
-  // Detect Cloud SQL unix socket path in DATABASE_URL
-  // Format: postgresql://user:pass@/dbname?host=/cloudsql/project:region:instance
-  let clientConfig;
-  if (DATABASE_URL.includes('/cloudsql/')) {
-    // Parse manually — Node's URL class doesn't handle postgresql:// scheme
-    const match = DATABASE_URL.match(/postgresql:\/\/([^:]+):([^@]+)@\/([^?]+)\?host=(.+)/);
-    if (match) {
-      const [, user, password, database, socketPath] = match;
-      clientConfig = {
-        user,
-        password: decodeURIComponent(password),
-        database,
-        host: socketPath,
-        connectionTimeoutMillis: 10000,
-      };
-      console.log(`   Using Cloud SQL socket: ${socketPath}`);
-    } else {
-      console.log('⚠️  Could not parse Cloud SQL DATABASE_URL, trying as connection string');
-      clientConfig = { connectionString: DATABASE_URL, connectionTimeoutMillis: 10000 };
-    }
-  } else {
-    clientConfig = { connectionString: DATABASE_URL, connectionTimeoutMillis: 10000 };
-  }
-
   const MAX_RETRIES = 5;
   const RETRY_DELAY_MS = 3000;
 
   for (let attempt = 1; attempt <= MAX_RETRIES; attempt++) {
     try {
-      dbClient = new Client(clientConfig);
-      await dbClient.connect();
-      console.log(`✅ Connected to database (attempt ${attempt})`);
+      pool = createTenantPool({ connectionTimeout: 10000 });
+      // Verify pool connectivity
+      const client = await pool.connect();
+      client.release();
+      console.log(`✅ Connected to database pool (attempt ${attempt})`);
       global._dbConnectError = null;
 
       // Run classification schema migration (idempotent)
       // Provider registry + cloud log enrichments + IETF delegation_type
       try {
-        await dbClient.query(`
+        await pool.query(`
           CREATE TABLE IF NOT EXISTS provider_registry (
             id VARCHAR(100) PRIMARY KEY, registry_type VARCHAR(50) NOT NULL,
             label VARCHAR(255) NOT NULL, category VARCHAR(100) NOT NULL,
@@ -328,7 +333,7 @@ async function connectDatabase() {
       }
 
       try {
-        await dbClient.query(`
+        await pool.query(`
           ALTER TABLE workloads ADD COLUMN IF NOT EXISTS is_rogue BOOLEAN DEFAULT FALSE;
           ALTER TABLE workloads ADD COLUMN IF NOT EXISTS rogue_score NUMERIC(5,2) DEFAULT 0;
           ALTER TABLE workloads ADD COLUMN IF NOT EXISTS rogue_reasons JSONB DEFAULT '[]'::jsonb;
@@ -349,7 +354,7 @@ async function connectDatabase() {
     } catch (err) {
       console.log(`⚠️  DB connection attempt ${attempt}/${MAX_RETRIES}: ${err.message}`);
       global._dbConnectError = err.message;
-      dbClient = null;
+      pool = null;
       if (attempt < MAX_RETRIES) {
         await new Promise(r => setTimeout(r, RETRY_DELAY_MS));
       }
@@ -667,14 +672,14 @@ async function saveWorkload(workload) {
 
   // Dedup: if a workload with this name already exists but different spiffe_id, update it instead
   try {
-    const existing = await dbClient.query('SELECT id, spiffe_id FROM workloads WHERE name = $1 AND spiffe_id != $2', [workload.name, spiffeId]);
+    const existing = await pool.query('SELECT id, spiffe_id FROM workloads WHERE name = $1 AND spiffe_id != $2', [workload.name, spiffeId]);
     if (existing.rows.length > 0) {
       // Update existing record's spiffe_id to match, then let the upsert handle it
-      await dbClient.query('UPDATE workloads SET spiffe_id = $1, updated_at = NOW() WHERE id = $2', [spiffeId, existing.rows[0].id]);
+      await pool.query('UPDATE workloads SET spiffe_id = $1, updated_at = NOW() WHERE id = $2', [spiffeId, existing.rows[0].id]);
     }
   } catch {}
 
-  await dbClient.query(query, [
+  await pool.query(query, [
     spiffeId,
     workload.name,
     workload.type,
@@ -729,7 +734,7 @@ async function saveWorkload(workload) {
 
   // Track which connector discovered this workload
   if (workload.connector_id) {
-    await dbClient.query(
+    await pool.query(
       'UPDATE workloads SET connector_id = $1 WHERE spiffe_id = $2',
       [workload.connector_id, spiffeId]
     );
@@ -808,7 +813,7 @@ async function runDiscovery() {
     // Build identity graph after discovery
   try {
     console.log('\n🔗 Building identity graph...');
-    const graph = await refreshGraph(dbClient);
+    const graph = await refreshGraph(pool);
     if (graph) {
       console.log(`✅ Identity graph: ${graph.summary.total_nodes} nodes, ${graph.summary.total_relationships} edges, ${graph.summary.total_attack_paths} attack paths`);
       if (graph.summary.critical_paths > 0) {
@@ -856,13 +861,13 @@ function startPeriodicDiscovery() {
 
   // Connector-based periodic scan: only re-scans connectors configured in the DB
   const runConnectorPeriodicScan = async () => {
-    if (!dbClient) return;
+    if (!pool) return;
     try {
       const { runProviderScan } = require('./connectors/connector-routes');
       const { getCredentials } = require('./connectors/credential-store');
       const { clearGraphCache } = require('./graph/graph-routes');
 
-      const { rows: connectors } = await dbClient.query(
+      const { rows: connectors } = await pool.query(
         "SELECT * FROM connectors WHERE status IN ('active', 'pending')"
       );
       if (connectors.length === 0) {
@@ -883,13 +888,13 @@ function startPeriodicDiscovery() {
             if (!credentials[k]) credentials[k] = v;
           }
 
-          const workloads = await runProviderScan(connector, credentials, dbClient, {
+          const workloads = await runProviderScan(connector, credentials, pool, {
             scannerRegistry,
             saveWorkload,
           });
           totalWorkloads += workloads.length;
 
-          await dbClient.query(
+          await pool.query(
             `UPDATE connectors SET last_scan_status = 'completed', last_scan_at = NOW(),
              workload_count = $1, status = 'active' WHERE id = $2`,
             [workloads.length, connector.id]
@@ -904,7 +909,7 @@ function startPeriodicDiscovery() {
       if (totalWorkloads > 0) {
         clearGraphCache();
         try {
-          await refreshGraph(dbClient);
+          await refreshGraph(pool);
         } catch (e) { /* graph rebuild best-effort */ }
       }
     } catch (err) {
@@ -927,7 +932,7 @@ function startPeriodicDiscovery() {
 app.get('/health', (req, res) => {
   res.json({
     status: 'healthy',
-    database: dbClient ? 'connected' : 'disconnected',
+    database: pool ? 'connected (pool)' : 'disconnected',
     scanners: activeScanners.map(s => s.getMetadata())
   });
 });
@@ -946,8 +951,8 @@ app.get('/debug/db', (req, res) => {
     parsed_user: match ? match[1] : null,
     parsed_database: match ? match[3] : null,
     parsed_socket: match ? match[4] : null,
-    db_client_exists: !!dbClient,
-    db_client_type: dbClient ? typeof dbClient : 'null',
+    db_pool_exists: !!pool,
+    db_pool_type: pool ? 'Pool' : 'null',
     db_connect_error: global._dbConnectError || null,
   });
 });
@@ -988,9 +993,9 @@ app.get('/api/v1/scanners/health', async (req, res) => {
 
 // DELETE /api/v1/workloads/stale — Remove workloads not associated with any connector
 app.delete('/api/v1/workloads/stale', async (req, res) => {
-  if (!dbClient) return res.status(503).json({ error: 'No database' });
+  if (!pool) return res.status(503).json({ error: 'No database' });
   try {
-    const result = await dbClient.query(
+    const result = await pool.query(
       "DELETE FROM workloads WHERE connector_id IS NULL"
     );
     const { clearGraphCache } = require('./graph/graph-routes');
@@ -1003,16 +1008,16 @@ app.delete('/api/v1/workloads/stale', async (req, res) => {
 
 // Delete workloads by cloud provider (cleanup disconnected providers)
 app.delete('/api/v1/workloads/by-provider/:provider', async (req, res) => {
-  if (!dbClient) return res.status(503).json({ error: 'No database' });
+  if (!pool) return res.status(503).json({ error: 'No database' });
   const provider = req.params.provider;
   if (!['aws', 'gcp', 'azure', 'docker', 'kubernetes'].includes(provider)) {
     return res.status(400).json({ error: `Invalid provider: ${provider}` });
   }
   try {
-    const count = await dbClient.query(
+    const count = await pool.query(
       'SELECT COUNT(*) FROM workloads WHERE cloud_provider = $1', [provider]
     );
-    const result = await dbClient.query(
+    const result = await pool.query(
       'DELETE FROM workloads WHERE cloud_provider = $1', [provider]
     );
     const { clearGraphCache } = require('./graph/graph-routes');
@@ -1025,13 +1030,13 @@ app.delete('/api/v1/workloads/by-provider/:provider', async (req, res) => {
 
 // Delete a specific workload by ID
 app.delete('/api/v1/workloads/:id', async (req, res) => {
-  if (!dbClient) return res.status(503).json({ error: 'No database' });
+  if (!pool) return res.status(503).json({ error: 'No database' });
   const id = req.params.id;
   if (!/^[0-9a-f-]{36}$/.test(id)) {
     return res.status(400).json({ error: 'Invalid workload ID format' });
   }
   try {
-    const result = await dbClient.query('DELETE FROM workloads WHERE id = $1 RETURNING name, cloud_provider, type', [id]);
+    const result = await pool.query('DELETE FROM workloads WHERE id = $1 RETURNING name, cloud_provider, type', [id]);
     if (result.rowCount === 0) {
       return res.status(404).json({ error: 'Workload not found' });
     }
@@ -1064,7 +1069,7 @@ app.post('/api/v1/workloads/scan', async (req, res) => {
       const { runProviderScan } = require('./connectors/connector-routes');
       const { getCredentials } = require('./connectors/credential-store');
 
-      const { rows: connectors } = await dbClient.query(
+      const { rows: connectors } = await pool.query(
         "SELECT * FROM connectors WHERE status IN ('active', 'pending')"
       );
 
@@ -1073,7 +1078,7 @@ app.post('/api/v1/workloads/scan', async (req, res) => {
           const credData = await getCredentials(connector.id);
           if (!credData?.credentials) continue;
 
-          const workloads = await runProviderScan(connector, credData.credentials, dbClient, {
+          const workloads = await runProviderScan(connector, credData.credentials, pool, {
             scannerRegistry,
             saveWorkload,
           });
@@ -1084,7 +1089,7 @@ app.post('/api/v1/workloads/scan', async (req, res) => {
             if (w.is_shadow) stats.shadow_services++;
           }
 
-          await dbClient.query(
+          await pool.query(
             `UPDATE connectors SET last_scan_status = 'completed', last_scan_at = NOW(),
              workload_count = $1, status = 'active' WHERE id = $2`,
             [workloads.length, connector.id]
@@ -1127,7 +1132,7 @@ app.post('/api/v1/workloads/scan', async (req, res) => {
 
     // Step 2: Federation discovery — pull workloads from all federated SPIRE servers
     try {
-      const fedConfigResult = await dbClient.query(
+      const fedConfigResult = await pool.query(
         "SELECT metadata->>'federation_servers' as servers FROM workloads WHERE name = '__federation_config__' LIMIT 1"
       );
       const fedServers = fedConfigResult.rows[0]?.servers ? JSON.parse(fedConfigResult.rows[0].servers) : [];
@@ -1200,10 +1205,10 @@ app.post('/api/v1/workloads/scan', async (req, res) => {
 
             try {
               // Check if exists by name first
-              const existing = await dbClient.query('SELECT id FROM workloads WHERE name = $1', [name]);
+              const existing = await pool.query('SELECT id FROM workloads WHERE name = $1', [name]);
               if (existing.rows.length > 0) {
                 // Update existing
-                await dbClient.query(`
+                await pool.query(`
                   UPDATE workloads SET spiffe_id = $1, namespace = $2, category = $3, 
                     subcategory = $4, is_ai_agent = $5, type = $6, discovered_by = 'federation-discovery',
                     cloud_provider = 'federated', region = 'external', environment = 'production',
@@ -1217,7 +1222,7 @@ app.post('/api/v1/workloads/scan', async (req, res) => {
                 ]);
               } else {
                 // Insert new
-                await dbClient.query(`
+                await pool.query(`
                   INSERT INTO workloads (spiffe_id, name, type, namespace, environment, cloud_provider, region, category, subcategory,
                     is_ai_agent, is_mcp_server, discovered_by, trust_level, verified, security_score, is_shadow, shadow_score,
                     labels, metadata, last_seen)
@@ -1276,12 +1281,12 @@ app.post('/api/v1/workloads/scan', async (req, res) => {
             const spiffeId = `spiffe://${server.trust_domain}/${cr.spiffe_suffix}`;
             const secScore = cr.nhiBucket === 'credential' ? (cr.risk_level === 'high' ? 25 : cr.risk_level === 'medium' ? 40 : 60) : 50;
             try {
-              const existing = await dbClient.query('SELECT id FROM workloads WHERE name = $1', [cr.name]);
+              const existing = await pool.query('SELECT id FROM workloads WHERE name = $1', [cr.name]);
               if (existing.rows.length > 0) {
-                await dbClient.query('UPDATE workloads SET spiffe_id=$1, type=$2, category=$3, subcategory=$4, updated_at=NOW() WHERE id=$5',
+                await pool.query('UPDATE workloads SET spiffe_id=$1, type=$2, category=$3, subcategory=$4, updated_at=NOW() WHERE id=$5',
                   [spiffeId, cr.type, cr.category, cr.subcategory, existing.rows[0].id]);
               } else {
-                await dbClient.query(`
+                await pool.query(`
                   INSERT INTO workloads (spiffe_id, name, type, namespace, environment, cloud_provider, region, category, subcategory,
                     is_ai_agent, is_mcp_server, discovered_by, trust_level, verified, security_score, is_shadow, shadow_score, labels, metadata, last_seen)
                   VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,NOW())
@@ -1315,12 +1320,12 @@ app.post('/api/v1/workloads/scan', async (req, res) => {
 
     // Step 3: Build identity graph + generate baseline policies
     try {
-      const graph = await refreshGraph(dbClient);
+      const graph = await refreshGraph(pool);
       if (graph) {
         console.log(`  ✅ Graph: ${graph.summary.total_nodes} nodes, ${graph.summary.total_relationships} edges`);
         // Generate audit-mode baseline policies from discovered topology
         try {
-          const policyCount = await generateBaselinePolicies(graph, dbClient);
+          const policyCount = await generateBaselinePolicies(graph, pool);
           if (policyCount > 0) stats.baseline_policies = policyCount;
         } catch (polErr) {
           console.error('  ⚠️ Baseline policy generation error:', polErr.message);
@@ -1330,7 +1335,7 @@ app.post('/api/v1/workloads/scan', async (req, res) => {
 
     // Step 4: Dedup — remove exact name duplicates keeping newest
     try {
-      const dupes = await dbClient.query(`
+      const dupes = await pool.query(`
         SELECT name, COUNT(*) as cnt, array_agg(id ORDER BY updated_at DESC) as ids
         FROM workloads WHERE name != '__federation_config__'
         GROUP BY name HAVING COUNT(*) > 1
@@ -1339,7 +1344,7 @@ app.post('/api/v1/workloads/scan', async (req, res) => {
       for (const row of dupes.rows) {
         const keepId = row.ids[0];
         const deleteIds = row.ids.slice(1);
-        await dbClient.query('DELETE FROM workloads WHERE id = ANY($1)', [deleteIds]);
+        await pool.query('DELETE FROM workloads WHERE id = ANY($1)', [deleteIds]);
         deduped += deleteIds.length;
       }
       if (deduped > 0) console.log(`  🧹 Dedup: removed ${deduped} duplicate entries`);
@@ -1347,11 +1352,11 @@ app.post('/api/v1/workloads/scan', async (req, res) => {
 
     // Step 5: Auto-attest federated workloads via their SPIRE servers
     try {
-      const fedConfigResult2 = await dbClient.query(
+      const fedConfigResult2 = await pool.query(
         "SELECT metadata->>'federation_servers' as servers FROM workloads WHERE name = '__federation_config__' LIMIT 1"
       );
       const fedServers2 = fedConfigResult2.rows[0]?.servers ? JSON.parse(fedConfigResult2.rows[0].servers) : [];
-      const fedWorkloads = await dbClient.query("SELECT * FROM workloads WHERE discovered_by = 'federation-discovery' AND (trust_level IS NULL OR trust_level = 'none') AND type NOT IN ('credential', 'external-resource')");
+      const fedWorkloads = await pool.query("SELECT * FROM workloads WHERE discovered_by = 'federation-discovery' AND (trust_level IS NULL OR trust_level = 'none') AND type NOT IN ('credential', 'external-resource')");
 
       for (const fw of fedWorkloads.rows) {
         const meta = typeof fw.metadata === 'string' ? JSON.parse(fw.metadata) : (fw.metadata || {});
@@ -1373,7 +1378,7 @@ app.post('/api/v1/workloads/scan', async (req, res) => {
           const verifyResult = await verifyResp.json();
 
           if (verifyResult.verified) {
-            await dbClient.query(`
+            await pool.query(`
               UPDATE workloads SET
                 trust_level = 'high', verified = true, verification_method = 'spiffe-federation',
                 verified_at = NOW(), verified_by = $1, security_score = 75,
@@ -1407,8 +1412,8 @@ app.post('/api/v1/workloads/scan', async (req, res) => {
 
     // Step 6: Cross-link credentials — attach service account credentials to Cloud Run services
     try {
-      const crServices = await dbClient.query("SELECT id, name, metadata FROM workloads WHERE type = 'cloud-run-service'");
-      const saWorkloads = await dbClient.query("SELECT id, name, metadata FROM workloads WHERE type = 'service-account'");
+      const crServices = await pool.query("SELECT id, name, metadata FROM workloads WHERE type = 'cloud-run-service'");
+      const saWorkloads = await pool.query("SELECT id, name, metadata FROM workloads WHERE type = 'service-account'");
       let linked = 0;
       for (const cr of crServices.rows) {
         const meta = typeof cr.metadata === 'string' ? JSON.parse(cr.metadata) : (cr.metadata || {});
@@ -1429,7 +1434,7 @@ app.post('/api/v1/workloads/scan', async (req, res) => {
           updatedSummary.service_account = saName;
           meta.credentials = mergedCreds;
           meta.credential_summary = updatedSummary;
-          await dbClient.query('UPDATE workloads SET metadata = $1, updated_at = NOW() WHERE id = $2', [JSON.stringify(meta), cr.id]);
+          await pool.query('UPDATE workloads SET metadata = $1, updated_at = NOW() WHERE id = $2', [JSON.stringify(meta), cr.id]);
           linked++;
         }
       }
@@ -1438,10 +1443,10 @@ app.post('/api/v1/workloads/scan', async (req, res) => {
 
     // Step 6b: Link IAM scanner results to compute workloads (AWS)
     try {
-      const iamRoles = await dbClient.query(
+      const iamRoles = await pool.query(
         "SELECT id, name, metadata FROM workloads WHERE type = 'iam-role' AND discovered_by = 'iam-scanner'"
       );
-      const computeWorkloads = await dbClient.query(
+      const computeWorkloads = await pool.query(
         "SELECT id, name, metadata FROM workloads WHERE type IN ('lambda', 'ec2', 'ecs-task') AND discovered_by = 'aws-scanner'"
       );
 
@@ -1464,7 +1469,7 @@ app.post('/api/v1/workloads/scan', async (req, res) => {
                 provider: 'aws',
                 linked_workload_id: role.id,
               });
-              await dbClient.query(
+              await pool.query(
                 "UPDATE workloads SET metadata = jsonb_set(COALESCE(metadata, '{}')::jsonb, '{credentials}', $1::jsonb), updated_at = NOW() WHERE id = $2",
                 [JSON.stringify(existingCreds), compute.id]
               );
@@ -1480,10 +1485,10 @@ app.post('/api/v1/workloads/scan', async (req, res) => {
 
     // Step 6c: Link Vault scanner results to workloads referencing Vault
     try {
-      const vaultWorkloads = await dbClient.query(
+      const vaultWorkloads = await pool.query(
         "SELECT id, name, metadata FROM workloads WHERE discovered_by = 'vault-scanner'"
       );
-      const allWorkloads = await dbClient.query(
+      const allWorkloads = await pool.query(
         "SELECT id, name, metadata FROM workloads WHERE discovered_by IN ('docker-scanner', 'aws-scanner') AND metadata::text LIKE '%VAULT%'"
       );
 
@@ -1506,7 +1511,7 @@ app.post('/api/v1/workloads/scan', async (req, res) => {
             source: 'vault-linkage',
             vault_addr: vaultAddr || 'unknown',
           });
-          await dbClient.query(
+          await pool.query(
             "UPDATE workloads SET metadata = jsonb_set(COALESCE(metadata, '{}')::jsonb, '{credentials}', $1::jsonb), updated_at = NOW() WHERE id = $2",
             [JSON.stringify(existingCreds), w.id]
           );
@@ -1520,7 +1525,7 @@ app.post('/api/v1/workloads/scan', async (req, res) => {
 
     // Step 7: Auto-verify external resources
     try {
-      const resources = await dbClient.query("SELECT * FROM workloads WHERE type = 'external-resource'");
+      const resources = await pool.query("SELECT * FROM workloads WHERE type = 'external-resource'");
       let verified = 0;
       for (const r of resources.rows) {
         try {
@@ -1536,7 +1541,7 @@ app.post('/api/v1/workloads/scan', async (req, res) => {
 
     // Step 8: Auto-attest unattested compute workloads
     try {
-      const unattestedResult = await dbClient.query(`
+      const unattestedResult = await pool.query(`
         SELECT id FROM workloads
         WHERE (trust_level IS NULL OR trust_level = 'none')
           AND type NOT IN ('credential', 'external-resource', 'secret', 'auth-method', 'secret-engine')
@@ -1570,7 +1575,7 @@ app.post('/api/v1/workloads/scan', async (req, res) => {
     }
 
     const duration = ((Date.now() - startTime) / 1000).toFixed(2);
-    const finalCount = await dbClient.query("SELECT COUNT(*) as cnt FROM workloads WHERE name != '__federation_config__'");
+    const finalCount = await pool.query("SELECT COUNT(*) as cnt FROM workloads WHERE name != '__federation_config__'");
 
     res.json({
       success: true,
@@ -1590,7 +1595,7 @@ app.post('/api/v1/workloads/scan', async (req, res) => {
 // Get all workloads
 app.get('/api/v1/workloads', async (req, res) => {
   try {
-    const result = await dbClient.query(`
+    const result = await pool.query(`
       SELECT 
         id, spiffe_id, name, type, namespace, environment,
         category, subcategory, is_ai_agent, is_mcp_server,
@@ -1627,7 +1632,7 @@ app.get('/api/v1/workloads', async (req, res) => {
 // Get workload by ID
 app.get('/api/v1/workloads/:id', async (req, res) => {
   try {
-    const result = await dbClient.query(
+    const result = await pool.query(
       'SELECT * FROM workloads WHERE id = $1',
       [req.params.id]
     );
@@ -1659,7 +1664,7 @@ app.post('/api/v1/workloads/:id/verify', async (req, res) => {
       try {
         const { AttestationEngine } = require('./attestation/attestation-engine');
         const engine = new AttestationEngine();
-        const workload = (await dbClient.query('SELECT * FROM workloads WHERE id = $1', [req.params.id])).rows[0];
+        const workload = (await pool.query('SELECT * FROM workloads WHERE id = $1', [req.params.id])).rows[0];
         if (!workload) return res.status(404).json({ error: 'Workload not found' });
 
         const result = await engine.attest(workload, evidence || {});
@@ -1682,7 +1687,7 @@ app.post('/api/v1/workloads/:id/verify', async (req, res) => {
       attestation_expires = new Date(Date.now() + 3600000).toISOString();
     }
 
-    const result = await dbClient.query(`
+    const result = await pool.query(`
       UPDATE workloads SET
         verified = true,
         verified_at = NOW(),
@@ -1735,8 +1740,8 @@ app.post('/api/v1/tokens/issue', async (req, res) => {
     if (!workload_id && !workload_name) return res.status(400).json({ error: 'workload_id or workload_name required' });
 
     const q = workload_id
-      ? await dbClient.query('SELECT * FROM workloads WHERE id = $1', [workload_id])
-      : await dbClient.query('SELECT * FROM workloads WHERE name = $1', [workload_name]);
+      ? await pool.query('SELECT * FROM workloads WHERE id = $1', [workload_id])
+      : await pool.query('SELECT * FROM workloads WHERE name = $1', [workload_name]);
 
     if (!q.rows.length) return res.status(404).json({ error: 'Workload not found' });
     const workload = q.rows[0];
@@ -1802,11 +1807,11 @@ app.post('/api/v1/tokens/introspect', (req, res) => {
 // Workload options (for dropdowns in UI)
 app.get('/api/v1/workloads/options', async (req, res) => {
   try {
-    const envs = await dbClient.query('SELECT DISTINCT environment FROM workloads WHERE environment IS NOT NULL ORDER BY environment');
-    const types = await dbClient.query('SELECT DISTINCT type FROM workloads WHERE type IS NOT NULL ORDER BY type');
-    const categories = await dbClient.query('SELECT DISTINCT category FROM workloads WHERE category IS NOT NULL ORDER BY category');
-    const teams = await dbClient.query('SELECT DISTINCT team FROM workloads WHERE team IS NOT NULL ORDER BY team');
-    const providers = await dbClient.query('SELECT DISTINCT cloud_provider FROM workloads WHERE cloud_provider IS NOT NULL ORDER BY cloud_provider');
+    const envs = await pool.query('SELECT DISTINCT environment FROM workloads WHERE environment IS NOT NULL ORDER BY environment');
+    const types = await pool.query('SELECT DISTINCT type FROM workloads WHERE type IS NOT NULL ORDER BY type');
+    const categories = await pool.query('SELECT DISTINCT category FROM workloads WHERE category IS NOT NULL ORDER BY category');
+    const teams = await pool.query('SELECT DISTINCT team FROM workloads WHERE team IS NOT NULL ORDER BY team');
+    const providers = await pool.query('SELECT DISTINCT cloud_provider FROM workloads WHERE cloud_provider IS NOT NULL ORDER BY cloud_provider');
     res.json({
       environments: envs.rows.map(r => r.environment),
       types: types.rows.map(r => r.type),
@@ -1820,7 +1825,7 @@ app.get('/api/v1/workloads/options', async (req, res) => {
 // Target options (for policy builder)
 app.get('/api/v1/targets/options', async (req, res) => {
   try {
-    const result = await dbClient.query('SELECT id, name, type, category, provider, endpoint FROM targets ORDER BY name');
+    const result = await pool.query('SELECT id, name, type, category, provider, endpoint FROM targets ORDER BY name');
     res.json({ total: result.rows.length, targets: result.rows });
   } catch (error) { res.status(500).json({ error: error.message }); }
 });
@@ -1863,7 +1868,7 @@ if (POLICY_PROXY_ENABLED && POLICY_ENGINE_URL) {
 // Get statistics
 app.get('/api/v1/stats', async (req, res) => {
   try {
-    const stats = await dbClient.query(`
+    const stats = await pool.query(`
       SELECT
         COUNT(*) as total,
         SUM(CASE WHEN verified = true THEN 1 ELSE 0 END) as verified,
@@ -1875,14 +1880,14 @@ app.get('/api/v1/stats', async (req, res) => {
       FROM workloads
     `);
     
-    const byCategory = await dbClient.query(`
+    const byCategory = await pool.query(`
       SELECT category, COUNT(*) as count
       FROM workloads
       GROUP BY category
       ORDER BY count DESC
     `);
     
-    const byTrustLevel = await dbClient.query(`
+    const byTrustLevel = await pool.query(`
       SELECT trust_level, COUNT(*) as count
       FROM workloads
       GROUP BY trust_level
@@ -1917,7 +1922,7 @@ async function start() {
   } catch (dbErr) {
     console.error(`⚠️  Database connection failed: ${dbErr.message}`);
     console.log('   Service will start in stateless mode');
-    dbClient = null;
+    pool = null;
   }
 
   // 2. Mount DB-dependent routes if connected
@@ -1926,12 +1931,16 @@ async function start() {
     scannerRegistry: null,
     saveWorkload,
   };
-  if (dbClient) {
+  if (pool) {
+    // Apply tenant-scoped DB + data sovereignty middleware before routes
+    app.use(attachTenantDb(pool));
+    app.use(enforceDataResidency(pool));
+
     try {
-      mountAttestationRoutes(app, dbClient);
-      mountGraphRoutes(app, dbClient);
-      mountRegistryRoutes(app, dbClient);
-      mountConnectorRoutes(app, dbClient, connectorDeps);
+      mountAttestationRoutes(app, pool);
+      mountGraphRoutes(app, pool);
+      mountRegistryRoutes(app, pool);
+      mountConnectorRoutes(app, pool, connectorDeps);
     } catch (routeErr) {
       console.error(`⚠️  Route mounting failed: ${routeErr.message}`);
     }
@@ -1985,7 +1994,7 @@ async function start() {
       startPeriodicDiscovery();
 
       // Start periodic MCP server fingerprint rescan
-      if (dbClient) {
+      if (pool) {
         const MCP_RESCAN_INTERVAL = parseInt(process.env.MCP_RESCAN_INTERVAL_MS) || 300000; // 5 min default
         setTimeout(() => {
           console.log('🔄 Starting periodic MCP fingerprint rescan...');
@@ -1993,14 +2002,14 @@ async function start() {
             try {
               const RelScanner = require('./graph/relationship-scanner');
               const scanner = new RelScanner();
-              const results = await scanner.rescanMCPServers(dbClient);
+              const results = await scanner.rescanMCPServers(pool);
               if (results.drifted > 0) {
                 console.log(`⚠️  MCP drift detected: ${results.drifted} server(s) changed capabilities`);
                 // Add drift findings to the graph
                 try {
                   const { clearGraphCache, refreshGraph } = require('./graph/graph-routes');
                   clearGraphCache();
-                  await refreshGraph(dbClient);
+                  await refreshGraph(pool);
                 } catch { /* graph rebuild best-effort */ }
               }
             } catch (e) {
@@ -2013,14 +2022,14 @@ async function start() {
       }
 
       // Start periodic cloud log enrichment (every 5 minutes)
-      if (dbClient) {
+      if (pool) {
         const CLOUD_LOG_INTERVAL = parseInt(process.env.CLOUD_LOG_INTERVAL_MS) || 300000;
         setInterval(async () => {
           try {
             const { CloudLogEnricher } = require('./graph/cloud-log-enricher');
             const { ProviderRegistry } = require('./graph/provider-registry');
-            const enricher = new CloudLogEnricher(dbClient, ProviderRegistry.getInstance());
-            const { rows: workloads } = await dbClient.query('SELECT id, name, metadata FROM workloads LIMIT 500');
+            const enricher = new CloudLogEnricher(pool, ProviderRegistry.getInstance());
+            const { rows: workloads } = await pool.query('SELECT id, name, metadata FROM workloads LIMIT 500');
             const results = await enricher.enrichAll(workloads);
             const total = results.gcp.length + results.aws.length;
             if (total > 0) console.log(`[CloudLogEnricher] Periodic enrichment: ${total} entries`);
@@ -2037,7 +2046,7 @@ async function start() {
 process.on('SIGTERM', () => {
   console.log('\n🛑 Shutting down gracefully...');
   if (discoveryInterval) clearInterval(discoveryInterval);
-  if (dbClient) dbClient.end();
+  if (pool) pool.end();
   process.exit(0);
 });
 

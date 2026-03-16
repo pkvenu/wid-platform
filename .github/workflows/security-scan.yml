@@ -1,0 +1,82 @@
+name: Security Scan
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  schedule:
+    - cron: '0 6 * * 1'
+
+permissions:
+  contents: read
+  security-events: write
+
+jobs:
+  audit:
+    name: npm audit (${{ matrix.service }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        service:
+          - services/policy-sync-service
+          - services/discovery-service
+          - services/token-service
+          - services/credential-broker
+          - services/edge-gateway
+          - services/ext-authz-adapter
+          - shared/data-plane-core
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 18
+      - name: Install dependencies
+        working-directory: ${{ matrix.service }}
+        run: npm ci --ignore-scripts || npm install --ignore-scripts
+      - name: Run npm audit
+        working-directory: ${{ matrix.service }}
+        run: npm audit --audit-level=high
+
+  test:
+    name: Tests (${{ matrix.service }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        service:
+          - shared/data-plane-core
+          - services/policy-sync-service
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 18
+      - name: Install dependencies
+        working-directory: ${{ matrix.service }}
+        run: npm ci --ignore-scripts || npm install --ignore-scripts
+      - name: Run tests
+        working-directory: ${{ matrix.service }}
+        run: npm test
+
+  container-scan:
+    name: Container scan (${{ matrix.dockerfile }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        dockerfile:
+          - services/policy-sync-service/Dockerfile
+          - services/discovery-service/Dockerfile
+          - services/token-service/Dockerfile
+          - services/credential-broker/Dockerfile
+    steps:
+      - uses: actions/checkout@v4
+      - name: Run Trivy vulnerability scanner
+        uses: aquasecurity/trivy-action@0.28.0
+        with:
+          scan-type: config
+          scan-ref: ${{ matrix.dockerfile }}
+          severity: HIGH,CRITICAL
+          exit-code: 1

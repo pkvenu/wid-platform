@@ -1,7 +1,7 @@
 {
   "name": "edge-gateway",
   "version": "1.0.0",
-  "description": "Transparent HTTP proxy — on-prem/non-mesh deployment mode for Workload Identity Platform",
+  "description": "Transparent HTTP proxy — on-prem/non-mesh deployment mode for Workload Identity Defense (WID) Platform",
   "main": "src/gateway.js",
   "scripts": {
     "start": "node src/gateway.js",

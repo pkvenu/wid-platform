@@ -18,10 +18,14 @@ function computePolicyVersionHash(policy) {
   return crypto.createHash('sha256').update(canonical).digest('hex').slice(0, 16);
 }
 
-function mountPolicyRoutes(app, dbClient, opts = {}) {
+function mountPolicyRoutes(app, pool, opts = {}) {
   const evaluator = new PolicyEvaluator();
   const compilerName = opts.compiler || process.env.POLICY_COMPILER || 'rego';
   const compiler = getCompiler(compilerName);
+
+  // Tenant-scoped DB helper: uses req.db (set by attachTenantDb middleware)
+  // Falls back to direct pool query for system/gateway endpoints without user context
+  const db = (req) => req.db || { query: (text, params) => pool.query(text, params) };
 
   console.log(`  ✅ Policy routes mounted (compiler: ${compilerName})`);
 
@@ -44,12 +48,12 @@ function mountPolicyRoutes(app, dbClient, opts = {}) {
   // DB-backed with in-code fallback for backwards compatibility
   // ══════════════════════════════════════════════
 
-  // Helper: check if policy_templates table exists
+  // Helper: check if policy_templates table exists (system-level, no tenant scope needed)
   let _dbTemplatesAvailable = null;
   async function dbTemplatesAvailable() {
     if (_dbTemplatesAvailable !== null) return _dbTemplatesAvailable;
     try {
-      await dbClient.query("SELECT 1 FROM policy_templates LIMIT 1");
+      await pool.query("SELECT 1 FROM policy_templates LIMIT 1");
       _dbTemplatesAvailable = true;
     } catch {
       _dbTemplatesAvailable = false;
@@ -82,7 +86,7 @@ function mountPolicyRoutes(app, dbClient, opts = {}) {
         params.push(finding_type);
       }
 
-      const result = await dbClient.query(
+      const result = await db(req).query(
         `SELECT * FROM policy_templates WHERE ${where.join(' AND ')} ORDER BY policy_type, severity, name`,
         params
       );
@@ -100,7 +104,7 @@ function mountPolicyRoutes(app, dbClient, opts = {}) {
   // ── GET /api/v1/policies/templates/:templateId — Single template detail ──
   app.get('/api/v1/policies/templates/:templateId', async (req, res) => {
     try {
-      const result = await dbClient.query('SELECT * FROM policy_templates WHERE id = $1', [req.params.templateId]);
+      const result = await db(req).query('SELECT * FROM policy_templates WHERE id = $1', [req.params.templateId]);
       if (result.rows.length === 0) return res.status(404).json({ error: 'Template not found' });
       res.json(result.rows[0]);
     } catch (e) {
@@ -117,7 +121,7 @@ function mountPolicyRoutes(app, dbClient, opts = {}) {
       const { name, description, policy_type, severity, conditions, actions,
               scope_environment, effect, tags, enabled } = req.body;
 
-      const result = await dbClient.query(`
+      const result = await db(req).query(`
         UPDATE policy_templates SET
           name = COALESCE($2, name),
           description = COALESCE($3, description),
@@ -155,7 +159,7 @@ function mountPolicyRoutes(app, dbClient, opts = {}) {
         return res.status(400).json({ error: 'Required: id, name, policy_type' });
       }
 
-      const result = await dbClient.query(`
+      const result = await db(req).query(`
         INSERT INTO policy_templates (id, name, description, policy_type, severity, conditions, actions,
           scope_environment, effect, tags, created_by)
         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11) RETURNING *
@@ -176,7 +180,7 @@ function mountPolicyRoutes(app, dbClient, opts = {}) {
       if (!(await dbTemplatesAvailable())) {
         return res.status(501).json({ error: 'Templates not initialized. Run: POST /admin/migrate-templates' });
       }
-      const result = await dbClient.query('DELETE FROM policy_templates WHERE id = $1 RETURNING id', [req.params.templateId]);
+      const result = await db(req).query('DELETE FROM policy_templates WHERE id = $1 RETURNING id', [req.params.templateId]);
       if (result.rows.length === 0) return res.status(404).json({ error: 'Template not found' });
       res.json({ message: 'Template deleted', id: req.params.templateId });
     } catch (e) {
@@ -190,7 +194,7 @@ function mountPolicyRoutes(app, dbClient, opts = {}) {
       const { findingType } = req.params;
 
       if (await dbTemplatesAvailable()) {
-        const result = await dbClient.query(`
+        const result = await db(req).query(`
           SELECT frm.finding_type, frm.priority, frm.reason, pt.*
           FROM finding_remediation_map frm
           JOIN policy_templates pt ON pt.id = frm.template_id
@@ -210,7 +214,7 @@ function mountPolicyRoutes(app, dbClient, opts = {}) {
   app.get('/api/v1/policies/remediation', async (req, res) => {
     try {
       if (await dbTemplatesAvailable()) {
-        const result = await dbClient.query(`
+        const result = await db(req).query(`
           SELECT frm.finding_type, frm.template_id, frm.priority, frm.reason, pt.name, pt.severity
           FROM finding_remediation_map frm
           JOIN policy_templates pt ON pt.id = frm.template_id
@@ -224,7 +228,7 @@ function mountPolicyRoutes(app, dbClient, opts = {}) {
         });
         return res.json({
           total_finding_types: Object.keys(mappings).length,
-          total_templates: (await dbClient.query('SELECT COUNT(*) FROM policy_templates')).rows[0].count,
+          total_templates: (await db(req).query('SELECT COUNT(*) FROM policy_templates')).rows[0].count,
           source: 'database',
           mappings,
         });
@@ -245,7 +249,7 @@ function mountPolicyRoutes(app, dbClient, opts = {}) {
   app.post('/api/v1/policies/from-template/:templateId', async (req, res) => {
     try {
       let tpl;
-      const result = await dbClient.query('SELECT * FROM policy_templates WHERE id = $1', [req.params.templateId]);
+      const result = await db(req).query('SELECT * FROM policy_templates WHERE id = $1', [req.params.templateId]);
       tpl = result.rows[0];
       if (!tpl) return res.status(404).json({ error: 'Template not found' });
 
@@ -255,7 +259,7 @@ function mountPolicyRoutes(app, dbClient, opts = {}) {
       const attackPathId = req.body.attack_path_id || null;
 
       if (workloadName && !clientWorkloadId) {
-        const wr = await dbClient.query('SELECT id FROM workloads WHERE name = $1 LIMIT 1', [workloadName]);
+        const wr = await db(req).query('SELECT id FROM workloads WHERE name = $1 LIMIT 1', [workloadName]);
         if (wr.rows.length) clientWorkloadId = wr.rows[0].id;
       }
 
@@ -267,7 +271,7 @@ function mountPolicyRoutes(app, dbClient, opts = {}) {
       const actions = typeof tpl.actions === 'string' ? tpl.actions : JSON.stringify(tpl.actions);
       const compiled = compiler.compile({ ...tpl, conditions: JSON.parse(conditions), actions: JSON.parse(actions), id: 'tpl' });
 
-      const r = await dbClient.query(`
+      const r = await db(req).query(`
         INSERT INTO policies (name, description, policy_type, severity, conditions, actions,
           scope_environment, template_id, template_version, rego_policy, opa_package,
           enforcement_mode, effect, created_by, client_workload_id, attack_path_id, priority)
@@ -287,7 +291,7 @@ function mountPolicyRoutes(app, dbClient, opts = {}) {
             const workloadName = req.body.workload || null;
             let clientWorkloadId = req.body.client_workload_id || null;
             if (workloadName && !clientWorkloadId) {
-              const wr = await dbClient.query('SELECT id FROM workloads WHERE name = $1 LIMIT 1', [workloadName]);
+              const wr = await db(req).query('SELECT id FROM workloads WHERE name = $1 LIMIT 1', [workloadName]);
               if (wr.rows.length) clientWorkloadId = wr.rows[0].id;
             }
             // Match by template + scope (scoped and global policies coexist)
@@ -297,12 +301,12 @@ function mountPolicyRoutes(app, dbClient, opts = {}) {
             const scopeParams = clientWorkloadId
               ? [req.params.templateId, clientWorkloadId]
               : [req.params.templateId];
-            const existing = await dbClient.query(
+            const existing = await db(req).query(
               `SELECT id FROM policies WHERE template_id = $1 AND enabled = true ${scopeCondition} LIMIT 1`,
               scopeParams
             );
             if (existing.rows.length > 0) {
-              const updated = await dbClient.query(
+              const updated = await db(req).query(
                 'UPDATE policies SET enforcement_mode = $1, updated_at = NOW() WHERE id = $2 RETURNING *',
                 ['enforce', existing.rows[0].id]
               );
@@ -363,7 +367,7 @@ function mountPolicyRoutes(app, dbClient, opts = {}) {
         scope_environment, scope_types, enabled: true, enforcement_mode: 'audit',
       };
 
-      const wR = await dbClient.query('SELECT * FROM workloads');
+      const wR = await db(req).query('SELECT * FROM workloads');
       const result = evaluator.evaluateAgainstAll(mock, wR.rows.map(parseWorkload));
       const compiled = compiler.compile(mock);
 
@@ -376,9 +380,9 @@ function mountPolicyRoutes(app, dbClient, opts = {}) {
 
   app.post('/api/v1/policies/evaluate-all', async (req, res) => {
     try {
-      const pR = await dbClient.query('SELECT * FROM policies WHERE enabled=true');
+      const pR = await db(req).query('SELECT * FROM policies WHERE enabled=true');
       const policies = pR.rows.map(parsePolicy);
-      const wR = await dbClient.query('SELECT * FROM workloads');
+      const wR = await db(req).query('SELECT * FROM workloads');
       const workloads = wR.rows.map(parseWorkload);
 
       let totalViolations = 0;
@@ -388,12 +392,12 @@ function mountPolicyRoutes(app, dbClient, opts = {}) {
         const result = evaluator.evaluateAgainstAll(policy, workloads);
         totalViolations += result.violations;
         for (const v of result.results) {
-          await dbClient.query(
+          await db(req).query(
             `INSERT INTO policy_violations (policy_id,policy_name,workload_id,workload_name,severity,violation_type,message,details) VALUES ($1,$2,$3,$4,$5,$6,$7,$8)`,
             [policy.id, policy.name, v.workload_id, v.workload_name, v.severity, policy.policy_type, v.message, JSON.stringify({ conditions: v.conditions })]
           );
         }
-        await dbClient.query('UPDATE policies SET last_evaluated=NOW(), evaluation_count=evaluation_count+1 WHERE id=$1', [policy.id]);
+        await db(req).query('UPDATE policies SET last_evaluated=NOW(), evaluation_count=evaluation_count+1 WHERE id=$1', [policy.id]);
         policyResults.push({ id: policy.id, name: policy.name, type: policy.policy_type, violations: result.violations, evaluated: result.evaluated });
       }
 
@@ -432,26 +436,26 @@ function mountPolicyRoutes(app, dbClient, opts = {}) {
       // Look up workloads by SPIFFE ID (principal) or name
       let client = null, server = null;
       if (source_principal && source_principal !== 'unknown') {
-        const cR = await dbClient.query('SELECT * FROM workloads WHERE spiffe_id=$1 LIMIT 1', [source_principal]);
+        const cR = await db(req).query('SELECT * FROM workloads WHERE spiffe_id=$1 LIMIT 1', [source_principal]);
         if (cR.rows.length) client = parseWorkload(cR.rows[0]);
       }
       if (!client && source_name) {
-        const cR = await dbClient.query('SELECT * FROM workloads WHERE name=$1 LIMIT 1', [source_name]);
+        const cR = await db(req).query('SELECT * FROM workloads WHERE name=$1 LIMIT 1', [source_name]);
         if (cR.rows.length) client = parseWorkload(cR.rows[0]);
       }
       if (destination_principal && destination_principal !== 'unknown') {
-        const sR = await dbClient.query('SELECT * FROM workloads WHERE spiffe_id=$1 LIMIT 1', [destination_principal]);
+        const sR = await db(req).query('SELECT * FROM workloads WHERE spiffe_id=$1 LIMIT 1', [destination_principal]);
         if (sR.rows.length) server = parseWorkload(sR.rows[0]);
       }
       if (!server && destination_name) {
-        const sR = await dbClient.query('SELECT * FROM workloads WHERE name=$1 LIMIT 1', [destination_name]);
+        const sR = await db(req).query('SELECT * FROM workloads WHERE name=$1 LIMIT 1', [destination_name]);
         if (sR.rows.length) server = parseWorkload(sR.rows[0]);
       }
 
       // If workloads not found, return default policy (no match)
       if (!client || !server) {
         try {
-          await dbClient.query(
+          await db(req).query(
             `INSERT INTO ext_authz_decisions (decision_id, source_principal, destination_principal, source_name, destination_name, method, path_pattern, verdict, policy_name, adapter_mode, trace_id, hop_index, total_hops)
              VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)`,
             [decision_id, source_principal, destination_principal, source_name || 'unknown', destination_name || 'unknown', method, path_pattern, 'no-match', null, adapter_mode, trace_id || null, hop_index || 0, total_hops || 1]
@@ -473,7 +477,7 @@ function mountPolicyRoutes(app, dbClient, opts = {}) {
       let chainContext = null;
       if (trace_id) {
         try {
-          const priorHops = await dbClient.query(
+          const priorHops = await db(req).query(
             `SELECT source_name, destination_name, verdict, hop_index, total_hops, token_jti, policy_name, created_at
              FROM ext_authz_decisions WHERE trace_id=$1 ORDER BY hop_index ASC`,
             [trace_id]
@@ -502,7 +506,7 @@ function mountPolicyRoutes(app, dbClient, opts = {}) {
       }
 
       // Evaluate access policies (with chain context if available)
-      const pR = await dbClient.query(
+      const pR = await db(req).query(
         "SELECT * FROM policies WHERE enabled=true AND policy_type IN ('access', 'conditional_access') ORDER BY priority ASC"
       );
       const policies = pR.rows.map(parsePolicy);
@@ -515,7 +519,7 @@ function mountPolicyRoutes(app, dbClient, opts = {}) {
 
       // Snapshot policy state asynchronously (non-blocking for hot path)
       if (matchedPolicy && policyVersionHash) {
-        dbClient.query(
+        db(req).query(
           `INSERT INTO policy_snapshots (policy_id, version_hash, policy_name, policy_type, conditions, actions, effect, enforcement_mode, severity, scope_environment, client_workload_id, server_workload_id)
            SELECT $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12
            WHERE NOT EXISTS (SELECT 1 FROM policy_snapshots WHERE policy_id=$1 AND version_hash=$2)`,
@@ -528,7 +532,7 @@ function mountPolicyRoutes(app, dbClient, opts = {}) {
 
       // Log decision with chain context + policy version
       try {
-        await dbClient.query(
+        await db(req).query(
           `INSERT INTO ext_authz_decisions (decision_id, source_principal, destination_principal, source_name, destination_name, method, path_pattern, verdict, policy_name, policies_evaluated, adapter_mode, latency_ms, trace_id, token_jti, hop_index, total_hops, chain_depth, token_context, policy_version, request_context)
            VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20)`,
           [decision_id, source_principal, destination_principal, source_name || client.name, destination_name || server.name,
@@ -572,7 +576,7 @@ function mountPolicyRoutes(app, dbClient, opts = {}) {
           // Route AI telemetry events to dedicated table
           if (e.event_type === 'ai_request' && e.ai) {
             const ai = e.ai;
-            await dbClient.query(
+            await db(req).query(
               `INSERT INTO ai_request_events (
                 decision_id, source_name, source_principal, destination_host,
                 method, path_pattern, ai_provider, ai_provider_label, ai_model,
@@ -598,7 +602,7 @@ function mountPolicyRoutes(app, dbClient, opts = {}) {
           // Route AI response events — update existing row with response metadata
           if (e.event_type === 'ai_response' && e.ai && e.decision_id) {
             const ai = e.ai;
-            await dbClient.query(
+            await db(req).query(
               `UPDATE ai_request_events SET
                 response_status = COALESCE($2, response_status),
                 actual_input_tokens = COALESCE($3, actual_input_tokens),
@@ -632,7 +636,7 @@ function mountPolicyRoutes(app, dbClient, opts = {}) {
 
           // Route MCP tool call events to dedicated table
           if (e.event_type === 'mcp_tool_call') {
-            await dbClient.query(
+            await db(req).query(
               `INSERT INTO mcp_tool_events (
                 decision_id, source_name, source_principal, destination_host,
                 jsonrpc_method, jsonrpc_id, tool_name, tool_arguments,
@@ -655,7 +659,7 @@ function mountPolicyRoutes(app, dbClient, opts = {}) {
 
           // Route MCP tool response events — update existing row with response metadata
           if (e.event_type === 'mcp_tool_response' && e.decision_id) {
-            await dbClient.query(
+            await db(req).query(
               `UPDATE mcp_tool_events SET
                 response_status = COALESCE($2, response_status),
                 result_type = COALESCE($3, result_type),
@@ -679,7 +683,7 @@ function mountPolicyRoutes(app, dbClient, opts = {}) {
             continue;
           }
 
-          await dbClient.query(
+          await db(req).query(
             `INSERT INTO ext_authz_decisions (decision_id, source_principal, destination_principal, source_name, destination_name, method, path_pattern, verdict, policy_name, adapter_mode, latency_ms, cached, token_jti, chain_depth, trace_id, parent_decision_id, hop_index, total_hops, enforcement_action, enforcement_detail, token_context, request_context, response_context)
              VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23)`,
             [e.decision_id, e.source_principal, e.destination_principal, e.source_name, e.destination_name,
@@ -719,7 +723,7 @@ function mountPolicyRoutes(app, dbClient, opts = {}) {
       q += ` ORDER BY created_at DESC LIMIT $${i}`;
       p.push(Math.min(parseInt(rawLimit) || 200, 500));
 
-      const r = await dbClient.query(q, p);
+      const r = await db(req).query(q, p);
       res.json({ total: r.rows.length, events: r.rows });
     } catch (e) {
       if (e.message?.includes('does not exist')) {
@@ -738,7 +742,7 @@ function mountPolicyRoutes(app, dbClient, opts = {}) {
       // 1. By provider
       let byProvider = [];
       try {
-        const pR = await dbClient.query(`
+        const pR = await db(req).query(`
           SELECT ai_provider, COUNT(*) AS request_count,
                  SUM(estimated_input_tokens) AS total_tokens,
                  COUNT(DISTINCT source_name) AS unique_sources,
@@ -755,7 +759,7 @@ function mountPolicyRoutes(app, dbClient, opts = {}) {
       // 2. By model
       let byModel = [];
       try {
-        const mR = await dbClient.query(`
+        const mR = await db(req).query(`
           SELECT ai_provider, ai_model, COUNT(*) AS request_count,
                  SUM(estimated_input_tokens) AS total_tokens,
                  AVG(tool_count) AS avg_tool_count
@@ -771,7 +775,7 @@ function mountPolicyRoutes(app, dbClient, opts = {}) {
       // 3. By operation
       let byOperation = [];
       try {
-        const oR = await dbClient.query(`
+        const oR = await db(req).query(`
           SELECT ai_operation, COUNT(*) AS request_count,
                  SUM(estimated_input_tokens) AS total_tokens
           FROM ai_request_events
@@ -785,7 +789,7 @@ function mountPolicyRoutes(app, dbClient, opts = {}) {
       // 4. Totals
       let totals = { total_requests: 0, total_tokens: 0, unique_providers: 0, unique_sources: 0 };
       try {
-        const tR = await dbClient.query(`
+        const tR = await db(req).query(`
           SELECT COUNT(*) AS total_requests,
                  COALESCE(SUM(estimated_input_tokens), 0) AS total_tokens,
                  COUNT(DISTINCT ai_provider) AS unique_providers,
@@ -818,7 +822,7 @@ function mountPolicyRoutes(app, dbClient, opts = {}) {
       const hours = Math.min(parseInt(req.query.hours) || 24, 720);
       const since = `NOW() - INTERVAL '${hours} hours'`;
 
-      const result = await dbClient.query(`
+      const result = await db(req).query(`
         SELECT source_name,
                ai_provider AS provider,
                ai_model AS model,
@@ -835,7 +839,7 @@ function mountPolicyRoutes(app, dbClient, opts = {}) {
       `);
 
       // Also compute per-workload totals
-      const totalsResult = await dbClient.query(`
+      const totalsResult = await db(req).query(`
         SELECT source_name,
                COUNT(*) AS request_count,
                COALESCE(SUM(COALESCE(total_tokens, estimated_input_tokens)), 0)::INTEGER AS total_tokens,
@@ -887,7 +891,7 @@ function mountPolicyRoutes(app, dbClient, opts = {}) {
       }
       q += ` ORDER BY created_at DESC LIMIT $${i}`;
       p.push(Math.min(parseInt(limit) || 200, 500));
-      const r = await dbClient.query(q, p);
+      const r = await db(req).query(q, p);
       res.json({ total: r.rows.length, decisions: r.rows });
     } catch (e) {
       // If table doesn't exist yet, return empty
@@ -902,7 +906,7 @@ function mountPolicyRoutes(app, dbClient, opts = {}) {
   app.get('/api/v1/access/decisions/chain/:traceId', async (req, res) => {
     try {
       const { traceId } = req.params;
-      const r = await dbClient.query(
+      const r = await db(req).query(
         `SELECT decision_id, source_name, destination_name, verdict, policy_name, hop_index, total_hops,
                 chain_depth, token_jti, token_context, created_at, latency_ms, adapter_mode
          FROM ext_authz_decisions WHERE trace_id=$1 ORDER BY hop_index ASC, created_at ASC`,
@@ -935,7 +939,7 @@ function mountPolicyRoutes(app, dbClient, opts = {}) {
       const { traceId } = req.params;
 
       // 1. Fetch all decisions for this trace
-      const decisionsR = await dbClient.query(
+      const decisionsR = await db(req).query(
         `SELECT decision_id, source_principal, destination_principal, source_name, destination_name,
                 method, path_pattern, verdict, policy_name, policy_version, policies_evaluated,
                 adapter_mode, hop_index, total_hops, chain_depth, token_jti,
@@ -951,7 +955,7 @@ function mountPolicyRoutes(app, dbClient, opts = {}) {
       const versionHashes = [...new Set(decisionsR.rows.map(d => d.policy_version).filter(Boolean))];
       let snapshots = {};
       if (versionHashes.length > 0) {
-        const snapR = await dbClient.query(
+        const snapR = await db(req).query(
           `SELECT version_hash, policy_name, policy_type, conditions, actions, effect, enforcement_mode, severity, created_at
            FROM policy_snapshots WHERE version_hash = ANY($1)`,
           [versionHashes]
@@ -1016,7 +1020,7 @@ function mountPolicyRoutes(app, dbClient, opts = {}) {
       // 1. Hourly verdict buckets (for sparklines)
       let hourly = [];
       try {
-        const hR = await dbClient.query(`
+        const hR = await db(req).query(`
           SELECT date_trunc('hour', created_at) AS hour,
                  verdict,
                  COUNT(*) AS count
@@ -1042,7 +1046,7 @@ function mountPolicyRoutes(app, dbClient, opts = {}) {
       // 2. Top denied workload pairs
       let topDenied = [];
       try {
-        const tR = await dbClient.query(`
+        const tR = await db(req).query(`
           SELECT source_name, destination_name, COUNT(*) AS deny_count,
                  MAX(created_at) AS last_denied
           FROM ext_authz_decisions
@@ -1057,7 +1061,7 @@ function mountPolicyRoutes(app, dbClient, opts = {}) {
       // 3. Enforcement funnel: policies by mode
       let enforcementFunnel = { enforce: 0, audit: 0, disabled: 0, total: 0 };
       try {
-        const fR = await dbClient.query(`
+        const fR = await db(req).query(`
           SELECT enforcement_mode, COUNT(*) AS count
           FROM policies WHERE enabled = true
           GROUP BY enforcement_mode
@@ -1071,14 +1075,14 @@ function mountPolicyRoutes(app, dbClient, opts = {}) {
       // 4. Open violations count
       let openViolations = 0;
       try {
-        const vR = await dbClient.query(`SELECT COUNT(*) AS count FROM policy_violations WHERE status = 'open'`);
+        const vR = await db(req).query(`SELECT COUNT(*) AS count FROM policy_violations WHERE status = 'open'`);
         openViolations = parseInt(vR.rows[0]?.count) || 0;
       } catch (e) { /* table may not exist */ }
 
       // 5. Workload context lookup (for enriching source/dest with trust_level, security_score)
       let workloadContext = {};
       try {
-        const wR = await dbClient.query(`
+        const wR = await db(req).query(`
           SELECT name, trust_level, security_score, category, owner, team,
                  is_shadow, is_dormant, environment, type
           FROM workloads
@@ -1119,7 +1123,7 @@ function mountPolicyRoutes(app, dbClient, opts = {}) {
       q += ` ORDER BY created_at DESC LIMIT $${i}`;
       p.push(Math.min(parseInt(rawLimit) || 200, 500));
 
-      const r = await dbClient.query(q, p);
+      const r = await db(req).query(q, p);
       res.json({ total: r.rows.length, events: r.rows });
     } catch (e) {
       if (e.message?.includes('does not exist')) {
@@ -1137,7 +1141,7 @@ function mountPolicyRoutes(app, dbClient, opts = {}) {
 
       let byServer = [], byTool = [], bySource = [];
       try {
-        const sR = await dbClient.query(`
+        const sR = await db(req).query(`
           SELECT mcp_server_name, COUNT(*) AS call_count,
                  COUNT(DISTINCT tool_name) AS unique_tools,
                  COUNT(DISTINCT source_name) AS unique_sources,
@@ -1151,7 +1155,7 @@ function mountPolicyRoutes(app, dbClient, opts = {}) {
       } catch { /* table may not exist */ }
 
       try {
-        const tR = await dbClient.query(`
+        const tR = await db(req).query(`
           SELECT tool_name, COUNT(*) AS call_count,
                  COUNT(DISTINCT source_name) AS unique_callers,
                  AVG(latency_ms) AS avg_latency_ms,
@@ -1163,7 +1167,7 @@ function mountPolicyRoutes(app, dbClient, opts = {}) {
       } catch { /* table may not exist */ }
 
       try {
-        const srcR = await dbClient.query(`
+        const srcR = await db(req).query(`
           SELECT source_name, COUNT(*) AS call_count,
                  COUNT(DISTINCT mcp_server_name) AS unique_servers,
                  COUNT(DISTINCT tool_name) AS unique_tools,
@@ -1192,8 +1196,8 @@ function mountPolicyRoutes(app, dbClient, opts = {}) {
       }
 
       // Fetch client and server workloads
-      const cR = await dbClient.query('SELECT * FROM workloads WHERE id=$1', [client_workload_id]);
-      const sR = await dbClient.query('SELECT * FROM workloads WHERE id=$1', [server_workload_id]);
+      const cR = await db(req).query('SELECT * FROM workloads WHERE id=$1', [client_workload_id]);
+      const sR = await db(req).query('SELECT * FROM workloads WHERE id=$1', [server_workload_id]);
       if (!cR.rows.length) return res.status(404).json({ error: 'Client workload not found' });
       if (!sR.rows.length) return res.status(404).json({ error: 'Server workload not found' });
 
@@ -1201,7 +1205,7 @@ function mountPolicyRoutes(app, dbClient, opts = {}) {
       const server = parseWorkload(sR.rows[0]);
 
       // Fetch all access + conditional_access policies
-      const pR = await dbClient.query(
+      const pR = await db(req).query(
         "SELECT * FROM policies WHERE enabled=true AND policy_type IN ('access', 'conditional_access') ORDER BY priority ASC"
       );
       const policies = pR.rows.map(parsePolicy);
@@ -1210,7 +1214,7 @@ function mountPolicyRoutes(app, dbClient, opts = {}) {
       const result = evaluator.evaluateAccessRequest(policies, client, server, runtime || {});
 
       // Log decision
-      await dbClient.query(
+      await db(req).query(
         `INSERT INTO access_decisions (client_workload_id, client_name, server_workload_id, server_name, decision, policies_evaluated, policy_results, runtime_context)
          VALUES ($1,$2,$3,$4,$5,$6,$7,$8)`,
         [client.id, client.name, server.id, server.name, result.decision, result.evaluated, JSON.stringify(result.decisions), JSON.stringify(result.runtime)]
@@ -1229,7 +1233,7 @@ function mountPolicyRoutes(app, dbClient, opts = {}) {
       if (server_id) { q += ` AND server_workload_id=$${i}`; p.push(server_id); i++; }
       if (decision) { q += ` AND decision=$${i}`; p.push(decision); i++; }
       q += ` ORDER BY created_at DESC LIMIT $${i}`; p.push(Math.min(parseInt(limit) || 100, 500));
-      const r = await dbClient.query(q, p);
+      const r = await db(req).query(q, p);
       res.json({ total: r.rows.length, decisions: r.rows });
     } catch (e) { res.status(500).json({ error: e.message }); }
   });
@@ -1246,7 +1250,7 @@ function mountPolicyRoutes(app, dbClient, opts = {}) {
       if (type) { q += ` AND p.policy_type=$${idx}`; params.push(type); idx++; }
       if (enabled !== undefined) { q += ` AND p.enabled=$${idx}`; params.push(enabled === 'true'); idx++; }
       q += ' ORDER BY p.priority ASC, p.created_at DESC';
-      const r = await dbClient.query(q, params);
+      const r = await db(req).query(q, params);
       res.json({ total: r.rows.length, policies: r.rows, types: POLICY_TYPES });
     } catch (e) { res.status(500).json({ error: e.message }); }
   });
@@ -1265,7 +1269,7 @@ function mountPolicyRoutes(app, dbClient, opts = {}) {
       const compiled = compiler.compile({ name, description, conditions, actions, severity: severity || 'medium', id: 'new' });
       const pkg = `policy_${name.replace(/[^a-z0-9]/gi, '_').toLowerCase()}`;
 
-      const r = await dbClient.query(`
+      const r = await db(req).query(`
         INSERT INTO policies (name, description, policy_type, severity, conditions, actions,
           scope_environment, scope_types, scope_teams, enabled, enforcement_mode,
           template_id, rego_policy, opa_package, effect, client_workload_id,
@@ -1296,7 +1300,7 @@ function mountPolicyRoutes(app, dbClient, opts = {}) {
 
   app.get('/api/v1/policies/:id', async (req, res) => {
     try {
-      const r = await dbClient.query('SELECT * FROM policies WHERE id = $1', [req.params.id]);
+      const r = await db(req).query('SELECT * FROM policies WHERE id = $1', [req.params.id]);
       if (!r.rows.length) return res.status(404).json({ error: 'Not found' });
       res.json(r.rows[0]);
     } catch (e) { res.status(500).json({ error: e.message }); }
@@ -1338,7 +1342,7 @@ function mountPolicyRoutes(app, dbClient, opts = {}) {
       if (fields.length <= 1) return res.status(400).json({ error: 'Nothing to update' });
       values.push(req.params.id);
 
-      const r = await dbClient.query(`UPDATE policies SET ${fields.join(',')} WHERE id=$${idx} RETURNING *`, values);
+      const r = await db(req).query(`UPDATE policies SET ${fields.join(',')} WHERE id=$${idx} RETURNING *`, values);
       if (!r.rows.length) return res.status(404).json({ error: 'Not found' });
       res.json(r.rows[0]);
     } catch (e) { res.status(500).json({ error: e.message }); }
@@ -1346,7 +1350,7 @@ function mountPolicyRoutes(app, dbClient, opts = {}) {
 
   app.delete('/api/v1/policies/:id', async (req, res) => {
     try {
-      const r = await dbClient.query('DELETE FROM policies WHERE id=$1 RETURNING id,name', [req.params.id]);
+      const r = await db(req).query('DELETE FROM policies WHERE id=$1 RETURNING id,name', [req.params.id]);
       if (!r.rows.length) return res.status(404).json({ error: 'Not found' });
       res.json({ message: `Deleted "${r.rows[0].name}"`, ...r.rows[0] });
     } catch (e) { res.status(500).json({ error: e.message }); }
@@ -1354,7 +1358,7 @@ function mountPolicyRoutes(app, dbClient, opts = {}) {
 
   app.patch('/api/v1/policies/:id/toggle', async (req, res) => {
     try {
-      const r = await dbClient.query('UPDATE policies SET enabled=NOT enabled, updated_at=NOW() WHERE id=$1 RETURNING id,name,enabled', [req.params.id]);
+      const r = await db(req).query('UPDATE policies SET enabled=NOT enabled, updated_at=NOW() WHERE id=$1 RETURNING id,name,enabled', [req.params.id]);
       if (!r.rows.length) return res.status(404).json({ error: 'Not found' });
       res.json(r.rows[0]);
     } catch (e) { res.status(500).json({ error: e.message }); }
@@ -1362,21 +1366,21 @@ function mountPolicyRoutes(app, dbClient, opts = {}) {
 
   app.post('/api/v1/policies/:id/evaluate', async (req, res) => {
     try {
-      const pR = await dbClient.query('SELECT * FROM policies WHERE id=$1', [req.params.id]);
+      const pR = await db(req).query('SELECT * FROM policies WHERE id=$1', [req.params.id]);
       if (!pR.rows.length) return res.status(404).json({ error: 'Not found' });
       const policy = parsePolicy(pR.rows[0]);
 
-      const wR = await dbClient.query('SELECT * FROM workloads');
+      const wR = await db(req).query('SELECT * FROM workloads');
       const workloads = wR.rows.map(parseWorkload);
       const result = evaluator.evaluateAgainstAll(policy, workloads);
 
       for (const v of result.results) {
-        await dbClient.query(
+        await db(req).query(
           `INSERT INTO policy_violations (policy_id,policy_name,workload_id,workload_name,severity,violation_type,message,details) VALUES ($1,$2,$3,$4,$5,$6,$7,$8)`,
           [policy.id, policy.name, v.workload_id, v.workload_name, v.severity, policy.policy_type, v.message, JSON.stringify({ conditions: v.conditions, actions: v.actions })]
         );
       }
-      await dbClient.query('UPDATE policies SET last_evaluated=NOW(), evaluation_count=evaluation_count+1 WHERE id=$1', [policy.id]);
+      await db(req).query('UPDATE policies SET last_evaluated=NOW(), evaluation_count=evaluation_count+1 WHERE id=$1', [policy.id]);
       res.json({ policy: policy.name, ...result });
     } catch (e) { res.status(500).json({ error: e.message }); }
   });
@@ -1395,7 +1399,7 @@ function mountPolicyRoutes(app, dbClient, opts = {}) {
       if (severity) { q += ` AND severity=$${i}`; p.push(severity); i++; }
       if (type) { q += ` AND violation_type=$${i}`; p.push(type); i++; }
       q += ` ORDER BY created_at DESC LIMIT $${i}`; p.push(Math.min(parseInt(limit) || 100, 500));
-      const r = await dbClient.query(q, p);
+      const r = await db(req).query(q, p);
       res.json({ total: r.rows.length, violations: r.rows });
     } catch (e) { res.status(500).json({ error: e.message }); }
   });
@@ -1404,7 +1408,7 @@ function mountPolicyRoutes(app, dbClient, opts = {}) {
     try {
       const { status, resolved_by } = req.body;
       if (!status) return res.status(400).json({ error: 'status required' });
-      const r = await dbClient.query('UPDATE policy_violations SET status=$1, resolved_by=$2, resolved_at=NOW() WHERE id=$3 RETURNING *', [status, resolved_by || 'user', req.params.id]);
+      const r = await db(req).query('UPDATE policy_violations SET status=$1, resolved_by=$2, resolved_at=NOW() WHERE id=$3 RETURNING *', [status, resolved_by || 'user', req.params.id]);
       if (!r.rows.length) return res.status(404).json({ error: 'Not found' });
       res.json(r.rows[0]);
     } catch (e) { res.status(500).json({ error: e.message }); }
@@ -1416,7 +1420,7 @@ function mountPolicyRoutes(app, dbClient, opts = {}) {
   app.get('/api/v1/enforcement/summary', async (req, res) => {
     try {
       // Active policies with enforcement status
-      const polR = await dbClient.query(`
+      const polR = await db(req).query(`
         SELECT p.id, p.name, p.enforcement_mode, p.enabled, p.severity, p.policy_type,
                p.template_id, p.last_evaluated, p.evaluation_count, p.created_at,
                (SELECT COUNT(*) FROM policy_violations v WHERE v.policy_id = p.id AND v.status = 'open') as open_violations
@@ -1429,7 +1433,7 @@ function mountPolicyRoutes(app, dbClient, opts = {}) {
       // Recent violations (last 24h)
       let recentViolations = [];
       try {
-        const vR = await dbClient.query(`
+        const vR = await db(req).query(`
           SELECT policy_name, workload_name, severity, message, created_at
           FROM policy_violations WHERE created_at > NOW() - INTERVAL '24 hours'
           ORDER BY created_at DESC LIMIT 20
@@ -1440,7 +1444,7 @@ function mountPolicyRoutes(app, dbClient, opts = {}) {
       // Access decisions (blocked/allowed) from ext-authz
       let decisionStats = { total: 0, allowed: 0, denied: 0, audit_denied: 0 };
       try {
-        const dR = await dbClient.query(`
+        const dR = await db(req).query(`
           SELECT verdict, COUNT(*) as count
           FROM ext_authz_decisions WHERE created_at > NOW() - INTERVAL '24 hours'
           GROUP BY verdict
@@ -1540,7 +1544,7 @@ function mountPolicyRoutes(app, dbClient, opts = {}) {
           const enforcementAction = 'REJECT_REQUEST';
           const enforcementDetail = `Edge gateway rejected request: WID token ${tokenValidation.reason}. ${tokenValidation.reason === 'expired' ? `Token expired at ${tokenValidation.expired_at}. Re-attestation required.` : 'Invalid token signature. Possible forgery.'} Returned HTTP 403.`;
           try {
-            await dbClient.query(
+            await db(req).query(
               `INSERT INTO ext_authz_decisions (decision_id, source_name, destination_name, method, path_pattern, verdict, adapter_mode, latency_ms, enforcement_action, enforcement_detail)
                VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)`,
               [decisionId, source, destination, method || 'GET', path || '/', 'deny', 'enforce', latency, enforcementAction, enforcementDetail]
@@ -1559,8 +1563,8 @@ function mountPolicyRoutes(app, dbClient, opts = {}) {
       // 1. Resolve workloads from DB
       const findWorkload = async (name) => {
         // Try exact name match first, then partial
-        let r = await dbClient.query('SELECT * FROM workloads WHERE name=$1 LIMIT 1', [name]);
-        if (!r.rows.length) r = await dbClient.query('SELECT * FROM workloads WHERE name ILIKE $1 LIMIT 1', [`%${name}%`]);
+        let r = await db(req).query('SELECT * FROM workloads WHERE name=$1 LIMIT 1', [name]);
+        if (!r.rows.length) r = await db(req).query('SELECT * FROM workloads WHERE name ILIKE $1 LIMIT 1', [`%${name}%`]);
         return r.rows.length ? parseWorkload(r.rows[0]) : null;
       };
 
@@ -1572,7 +1576,7 @@ function mountPolicyRoutes(app, dbClient, opts = {}) {
         const latency = Date.now() - startMs;
         const regReason = `Source workload "${source}" not found in registry`;
         try {
-          await dbClient.query(
+          await db(req).query(
             `INSERT INTO ext_authz_decisions (decision_id, source_name, destination_name, method, path_pattern, verdict, adapter_mode, latency_ms, enforcement_action, enforcement_detail)
              VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)`,
             [decisionId, source, destination, method || 'GET', path || '/', 'deny', 'enforce', latency,
@@ -1631,7 +1635,7 @@ function mountPolicyRoutes(app, dbClient, opts = {}) {
       let aiContext = null;
       if (isAITraffic) {
         try {
-          const dailyStats = await dbClient.query(`
+          const dailyStats = await db(req).query(`
             SELECT COUNT(*)::INTEGER AS request_count,
                    COALESCE(SUM(COALESCE(total_tokens, estimated_input_tokens)), 0)::INTEGER AS total_tokens,
                    COALESCE(SUM(estimated_cost_usd), 0)::NUMERIC(10,6) AS total_cost
@@ -1652,7 +1656,7 @@ function mountPolicyRoutes(app, dbClient, opts = {}) {
       // 3. Evaluate against enforce AND audit policies
       // Enforce policies determine hard verdicts; audit policies allow traffic but log decisions
       // Load only global + workload-scoped policies (skip policies scoped to other workloads)
-      const allPolicies = await dbClient.query(
+      const allPolicies = await db(req).query(
         `SELECT * FROM policies WHERE enabled=true AND enforcement_mode IN ('enforce','audit')
          AND (client_workload_id IS NULL OR client_workload_id = $1)
          ORDER BY priority ASC`,
@@ -1786,7 +1790,7 @@ function mountPolicyRoutes(app, dbClient, opts = {}) {
       const totalHops = context?.total_hops ?? null;
 
       try {
-        await dbClient.query(
+        await db(req).query(
           `INSERT INTO ext_authz_decisions (decision_id, source_principal, destination_principal, source_name, destination_name, method, path_pattern, verdict, policy_name, policies_evaluated, adapter_mode, latency_ms, enforcement_action, enforcement_detail, source_type, destination_type, token_context, request_context, response_context, trace_id, hop_index, total_hops)
            VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22)`,
           [decisionId, client.spiffe_id || source, server.spiffe_id || destination,
@@ -1845,12 +1849,12 @@ function mountPolicyRoutes(app, dbClient, opts = {}) {
       let chainVerdict = 'allow';
 
       const findWorkload = async (name) => {
-        let r = await dbClient.query('SELECT * FROM workloads WHERE name=$1 LIMIT 1', [name]);
-        if (!r.rows.length) r = await dbClient.query('SELECT * FROM workloads WHERE name ILIKE $1 LIMIT 1', [`%${name}%`]);
+        let r = await db(req).query('SELECT * FROM workloads WHERE name=$1 LIMIT 1', [name]);
+        if (!r.rows.length) r = await db(req).query('SELECT * FROM workloads WHERE name ILIKE $1 LIMIT 1', [`%${name}%`]);
         return r.rows.length ? parseWorkload(r.rows[0]) : null;
       };
 
-      const allPolicies = await dbClient.query(
+      const allPolicies = await db(req).query(
         "SELECT * FROM policies WHERE enabled=true AND enforcement_mode='enforce' ORDER BY priority ASC"
       );
       const policies = allPolicies.rows.map(parsePolicy);
@@ -1898,7 +1902,7 @@ function mountPolicyRoutes(app, dbClient, opts = {}) {
           : `Hop ${i}: Edge gateway rejected ${hop.method||'GET'} from ${hop.source} to ${hop.destination}. ${reason}. Returned HTTP 403`;
 
         try {
-          await dbClient.query(
+          await db(req).query(
             `INSERT INTO ext_authz_decisions (decision_id, source_principal, destination_principal,
               source_name, destination_name, method, path_pattern, verdict, policy_name,
               policies_evaluated, adapter_mode, latency_ms, trace_id, parent_decision_id,
@@ -1937,7 +1941,7 @@ function mountPolicyRoutes(app, dbClient, opts = {}) {
   app.get('/api/v1/access/decisions/traces', async (req, res) => {
     try {
       const limit = Math.min(parseInt(req.query.limit) || 20, 100);
-      const result = await dbClient.query(`
+      const result = await db(req).query(`
         SELECT trace_id, MIN(created_at) as started_at, MAX(created_at) as ended_at,
           COUNT(*) as hop_count,
           COUNT(*) FILTER (WHERE verdict = 'allow') as allowed,
@@ -1959,7 +1963,7 @@ function mountPolicyRoutes(app, dbClient, opts = {}) {
   // ── Single trace detail — all hops in order ──
   app.get('/api/v1/access/decisions/traces/:traceId', async (req, res) => {
     try {
-      const result = await dbClient.query(
+      const result = await db(req).query(
         `SELECT * FROM ext_authz_decisions WHERE trace_id = $1 ORDER BY hop_index ASC`,
         [req.params.traceId]
       );
@@ -2056,7 +2060,7 @@ function mountPolicyRoutes(app, dbClient, opts = {}) {
       for (const p of agentPolicies) {
         try {
           // Check if already exists
-          const existing = await dbClient.query('SELECT id FROM policies WHERE template_id=$1', [p.template_id]);
+          const existing = await db(req).query('SELECT id FROM policies WHERE template_id=$1', [p.template_id]);
           if (existing.rows.length > 0) {
             results.push({ name: p.name, status: 'exists', id: existing.rows[0].id });
             continue;
@@ -2065,7 +2069,7 @@ function mountPolicyRoutes(app, dbClient, opts = {}) {
           const compiled = compiler.compile({ name: p.name, description: p.description, conditions: p.conditions, actions: p.actions, severity: p.severity, id: 'new' });
           const pkg = `policy_${p.name.replace(/[^a-z0-9]/gi, '_').toLowerCase()}`;
 
-          const r = await dbClient.query(`
+          const r = await db(req).query(`
             INSERT INTO policies (name, description, policy_type, severity, conditions, actions,
               enabled, enforcement_mode, template_id, rego_policy, opa_package, effect, priority, created_by)
             VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14) RETURNING id
@@ -2089,7 +2093,7 @@ function mountPolicyRoutes(app, dbClient, opts = {}) {
   app.get('/api/v1/governance/scenarios', async (req, res) => {
     try {
       // Get actual workloads from DB for realistic scenarios
-      const wR = await dbClient.query('SELECT name, type, is_ai_agent, is_mcp_server, category FROM workloads LIMIT 50');
+      const wR = await db(req).query('SELECT name, type, is_ai_agent, is_mcp_server, category FROM workloads LIMIT 50');
       const workloads = wR.rows;
       const agents = workloads.filter(w => w.is_ai_agent);
       const externals = workloads.filter(w => w.category === 'External APIs' || w.type === 'external-api');
@@ -2266,14 +2270,14 @@ function mountPolicyRoutes(app, dbClient, opts = {}) {
   app.get('/api/v1/compliance/frameworks', async (req, res) => {
     try {
       // Ensure compliance_frameworks column exists
-      try { await dbClient.query('ALTER TABLE policy_templates ADD COLUMN IF NOT EXISTS compliance_frameworks JSONB DEFAULT \'[]\''); } catch (e) { /* ignore */ }
+      try { await db(req).query('ALTER TABLE policy_templates ADD COLUMN IF NOT EXISTS compliance_frameworks JSONB DEFAULT \'[]\''); } catch (e) { /* ignore */ }
 
       const frameworks = [];
       for (const [fwId, fw] of Object.entries(COMPLIANCE_FRAMEWORKS)) {
         const totalControls = Object.keys(fw.controls).length;
 
         // Count templates mapped to this framework
-        const tplResult = await dbClient.query(
+        const tplResult = await db(req).query(
           `SELECT COUNT(*) as cnt FROM policy_templates
            WHERE compliance_frameworks @> $1::jsonb`,
           [JSON.stringify([{ framework: fwId }])]
@@ -2281,7 +2285,7 @@ function mountPolicyRoutes(app, dbClient, opts = {}) {
         const mappedTemplates = parseInt(tplResult.rows[0].cnt) || 0;
 
         // Count deployed policies from these templates
-        const deployedResult = await dbClient.query(
+        const deployedResult = await db(req).query(
           `SELECT COUNT(DISTINCT p.id) as cnt FROM policies p
            JOIN policy_templates pt ON p.template_id = pt.id
            WHERE pt.compliance_frameworks @> $1::jsonb
@@ -2317,7 +2321,7 @@ function mountPolicyRoutes(app, dbClient, opts = {}) {
       if (!fw) return res.status(404).json({ error: `Framework ${fwId} not found` });
 
       // Get all templates mapped to this framework
-      const tplResult = await dbClient.query(
+      const tplResult = await db(req).query(
         `SELECT pt.*,
           EXISTS(SELECT 1 FROM policies p WHERE p.template_id = pt.id AND p.enabled = true) as deployed,
           (SELECT p.enforcement_mode FROM policies p WHERE p.template_id = pt.id AND p.enabled = true LIMIT 1) as active_enforcement_mode
@@ -2364,7 +2368,7 @@ function mountPolicyRoutes(app, dbClient, opts = {}) {
       if (!fw) return res.status(404).json({ error: `Framework ${fwId} not found` });
 
       // Get undeployed templates for this framework
-      const tplResult = await dbClient.query(
+      const tplResult = await db(req).query(
         `SELECT pt.* FROM policy_templates pt
          WHERE pt.compliance_frameworks @> $1::jsonb
            AND NOT EXISTS(SELECT 1 FROM policies p WHERE p.template_id = pt.id AND p.enabled = true)
@@ -2380,7 +2384,7 @@ function mountPolicyRoutes(app, dbClient, opts = {}) {
           const conditions = typeof tpl.conditions === 'string' ? JSON.parse(tpl.conditions) : (tpl.conditions || []);
           const actions = typeof tpl.actions === 'string' ? JSON.parse(tpl.actions) : (tpl.actions || []);
 
-          await dbClient.query(
+          await db(req).query(
             `INSERT INTO policies (name, description, policy_type, severity, conditions, actions,
              enforcement_mode, enabled, template_id, template_version, scope_environment, effect, created_by)
              VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)`,
@@ -2397,7 +2401,7 @@ function mountPolicyRoutes(app, dbClient, opts = {}) {
         }
       }
 
-      skipped = (await dbClient.query(
+      skipped = (await db(req).query(
         `SELECT COUNT(*) as cnt FROM policy_templates pt
          WHERE pt.compliance_frameworks @> $1::jsonb
            AND EXISTS(SELECT 1 FROM policies p WHERE p.template_id = pt.id AND p.enabled = true)`,
@@ -2418,7 +2422,7 @@ function mountPolicyRoutes(app, dbClient, opts = {}) {
       if (!fw) return res.status(404).json({ error: `Framework ${fwId} not found` });
 
       // Get all templates with their deploy status
-      const tplResult = await dbClient.query(
+      const tplResult = await db(req).query(
         `SELECT pt.id, pt.name, pt.compliance_frameworks,
           EXISTS(SELECT 1 FROM policies p WHERE p.template_id = pt.id AND p.enabled = true) as deployed
          FROM policy_templates pt
@@ -2468,7 +2472,7 @@ module.exports = { mountPolicyRoutes };
 // =============================================================================
 // Admin: DB Migration for policy_templates (run once, then remove)
 // =============================================================================
-function mountAdminRoutes(app, dbClient) {
+function mountAdminRoutes(app, pool) {
   const { POLICY_TEMPLATES, FINDING_REMEDIATION_MAP } = require('./engine/templates');
 
   app.post('/admin/migrate-templates', async (req, res) => {
@@ -2476,7 +2480,7 @@ function mountAdminRoutes(app, dbClient) {
       const results = { steps: [], errors: [] };
 
       // 1. Create policy_templates table
-      await dbClient.query(`
+      await pool.query(`
         CREATE TABLE IF NOT EXISTS policy_templates (
           id VARCHAR(100) PRIMARY KEY,
           name VARCHAR(255) NOT NULL,
@@ -2496,13 +2500,13 @@ function mountAdminRoutes(app, dbClient) {
           updated_at TIMESTAMPTZ DEFAULT NOW()
         )
       `);
-      await dbClient.query('CREATE INDEX IF NOT EXISTS idx_policy_templates_type ON policy_templates(policy_type)');
-      await dbClient.query('CREATE INDEX IF NOT EXISTS idx_policy_templates_severity ON policy_templates(severity)');
-      await dbClient.query('CREATE INDEX IF NOT EXISTS idx_policy_templates_enabled ON policy_templates(enabled)');
+      await pool.query('CREATE INDEX IF NOT EXISTS idx_policy_templates_type ON policy_templates(policy_type)');
+      await pool.query('CREATE INDEX IF NOT EXISTS idx_policy_templates_severity ON policy_templates(severity)');
+      await pool.query('CREATE INDEX IF NOT EXISTS idx_policy_templates_enabled ON policy_templates(enabled)');
       results.steps.push('policy_templates table created');
 
       // 2. Create finding_remediation_map table
-      await dbClient.query(`
+      await pool.query(`
         CREATE TABLE IF NOT EXISTS finding_remediation_map (
           id SERIAL PRIMARY KEY,
           finding_type VARCHAR(100) NOT NULL,
@@ -2512,18 +2516,18 @@ function mountAdminRoutes(app, dbClient) {
           UNIQUE(finding_type, template_id)
         )
       `);
-      await dbClient.query('CREATE INDEX IF NOT EXISTS idx_frm_finding ON finding_remediation_map(finding_type)');
-      await dbClient.query('CREATE INDEX IF NOT EXISTS idx_frm_template ON finding_remediation_map(template_id)');
+      await pool.query('CREATE INDEX IF NOT EXISTS idx_frm_finding ON finding_remediation_map(finding_type)');
+      await pool.query('CREATE INDEX IF NOT EXISTS idx_frm_template ON finding_remediation_map(template_id)');
       results.steps.push('finding_remediation_map table created');
 
       // 3. Add template_version to policies
       try {
-        await dbClient.query('ALTER TABLE policies ADD COLUMN IF NOT EXISTS template_version INTEGER DEFAULT NULL');
+        await pool.query('ALTER TABLE policies ADD COLUMN IF NOT EXISTS template_version INTEGER DEFAULT NULL');
         results.steps.push('policies.template_version column added');
       } catch (e) { results.errors.push('template_version: ' + e.message); }
 
       // 4. Create auto-version trigger
-      await dbClient.query(`
+      await pool.query(`
         CREATE OR REPLACE FUNCTION update_policy_template_updated_at()
         RETURNS TRIGGER AS $t$
         BEGIN
@@ -2533,8 +2537,8 @@ function mountAdminRoutes(app, dbClient) {
         END;
         $t$ LANGUAGE plpgsql
       `);
-      await dbClient.query('DROP TRIGGER IF EXISTS trigger_policy_template_updated_at ON policy_templates');
-      await dbClient.query(`
+      await pool.query('DROP TRIGGER IF EXISTS trigger_policy_template_updated_at ON policy_templates');
+      await pool.query(`
         CREATE TRIGGER trigger_policy_template_updated_at
         BEFORE UPDATE ON policy_templates
         FOR EACH ROW EXECUTE FUNCTION update_policy_template_updated_at()
@@ -2544,12 +2548,12 @@ function mountAdminRoutes(app, dbClient) {
       // 5. Seed templates
       let seeded = 0;
       // Ensure tags + compliance_frameworks columns exist
-      try { await dbClient.query('ALTER TABLE policy_templates ADD COLUMN IF NOT EXISTS tags TEXT[] DEFAULT \'{}\''); } catch (e) { /* ignore */ }
-      try { await dbClient.query('ALTER TABLE policy_templates ADD COLUMN IF NOT EXISTS compliance_frameworks JSONB DEFAULT \'[]\''); } catch (e) { /* ignore */ }
-      try { await dbClient.query('CREATE INDEX IF NOT EXISTS idx_policy_templates_compliance ON policy_templates USING GIN (compliance_frameworks)'); } catch (e) { /* ignore */ }
+      try { await pool.query('ALTER TABLE policy_templates ADD COLUMN IF NOT EXISTS tags TEXT[] DEFAULT \'{}\''); } catch (e) { /* ignore */ }
+      try { await pool.query('ALTER TABLE policy_templates ADD COLUMN IF NOT EXISTS compliance_frameworks JSONB DEFAULT \'[]\''); } catch (e) { /* ignore */ }
+      try { await pool.query('CREATE INDEX IF NOT EXISTS idx_policy_templates_compliance ON policy_templates USING GIN (compliance_frameworks)'); } catch (e) { /* ignore */ }
       for (const [id, tpl] of Object.entries(POLICY_TEMPLATES)) {
         try {
-          await dbClient.query(`
+          await pool.query(`
             INSERT INTO policy_templates (id, name, description, policy_type, severity, conditions, actions, scope_environment, effect, tags, compliance_frameworks)
             VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)
             ON CONFLICT (id) DO UPDATE SET
@@ -2573,7 +2577,7 @@ function mountAdminRoutes(app, dbClient) {
       for (const [findingType, templates] of Object.entries(FINDING_REMEDIATION_MAP)) {
         for (let i = 0; i < templates.length; i++) {
           try {
-            await dbClient.query(`
+            await pool.query(`
               INSERT INTO finding_remediation_map (finding_type, template_id, priority, reason)
               VALUES ($1,$2,$3,$4)
               ON CONFLICT (finding_type, template_id) DO UPDATE SET priority = EXCLUDED.priority, reason = EXCLUDED.reason
@@ -2585,9 +2589,9 @@ function mountAdminRoutes(app, dbClient) {
       results.steps.push(`${mapped} remediation mappings seeded`);
 
       // 7. Verify
-      const tplCount = (await dbClient.query('SELECT COUNT(*) FROM policy_templates')).rows[0].count;
-      const frmCount = (await dbClient.query('SELECT COUNT(*) FROM finding_remediation_map')).rows[0].count;
-      const ftCount = (await dbClient.query('SELECT COUNT(DISTINCT finding_type) FROM finding_remediation_map')).rows[0].count;
+      const tplCount = (await pool.query('SELECT COUNT(*) FROM policy_templates')).rows[0].count;
+      const frmCount = (await pool.query('SELECT COUNT(*) FROM finding_remediation_map')).rows[0].count;
+      const ftCount = (await pool.query('SELECT COUNT(DISTINCT finding_type) FROM finding_remediation_map')).rows[0].count;
 
       res.json({
         success: results.errors.length === 0,

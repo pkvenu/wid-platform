@@ -1,9 +1,10 @@
 // =============================================================================
-// Auth Middleware — JWT cookie verification for protected routes
+// Auth Middleware — JWT cookie verification with tenant context
 // =============================================================================
 
 const jwt = require('jsonwebtoken');
 const { JWT_SECRET, COOKIE_NAME } = require('./auth-routes');
+const { tenantDb: { tenantQuery, systemQuery } } = require('../shared-loader');
 
 // Paths that do NOT require authentication
 const PUBLIC_PATHS = [
@@ -12,6 +13,9 @@ const PUBLIC_PATHS = [
   '/api/v1/relay/',          // Internal spoke-to-hub traffic
   '/api/v1/gateway/evaluate', // Edge gateway calls (authenticated via mTLS/tokens)
 ];
+
+// Default tenant for backwards compatibility during migration
+const DEFAULT_TENANT_ID = '00000000-0000-0000-0000-000000000001';
 
 function requireAuth(req, res, next) {
   // Skip auth for public paths
@@ -33,6 +37,8 @@ function requireAuth(req, res, next) {
   try {
     const decoded = jwt.verify(token, JWT_SECRET);
     req.user = decoded;
+    // Set tenantId — fall back to default for pre-migration JWTs
+    req.tenantId = decoded.tenantId || DEFAULT_TENANT_ID;
     next();
   } catch (err) {
     if (err.name === 'TokenExpiredError') {
@@ -43,4 +49,27 @@ function requireAuth(req, res, next) {
   }
 }
 
-module.exports = { requireAuth };
+/**
+ * Creates a tenant-scoped database proxy that wraps a pool.
+ * Attaches `req.db` with a `.query()` method that automatically
+ * scopes all queries to the request's tenant via RLS.
+ *
+ * Usage in routes: `const result = await req.db.query('SELECT ...', [params])`
+ *
+ * For system-level queries (no tenant scope): use pool directly.
+ */
+function attachTenantDb(pool) {
+  return (req, res, next) => {
+    const tid = req.tenantId || DEFAULT_TENANT_ID;
+    req.db = {
+      query: (text, params) => tenantQuery(pool, tid, text, params),
+    };
+    // Also expose system-level query for relay/gateway endpoints
+    req.systemDb = {
+      query: (text, params) => systemQuery(pool, text, params),
+    };
+    next();
+  };
+}
+
+module.exports = { requireAuth, attachTenantDb };

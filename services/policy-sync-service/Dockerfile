@@ -3,5 +3,6 @@ WORKDIR /app
 COPY package*.json ./
 RUN npm install --production
 COPY src/ ./src/
+COPY shared/ ./shared/
 EXPOSE 3001
 CMD ["npm", "start"]

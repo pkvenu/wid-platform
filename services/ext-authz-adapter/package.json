@@ -1,7 +1,7 @@
 {
   "name": "ext-authz-adapter",
   "version": "1.0.0",
-  "description": "Envoy ext_authz gRPC adapter — cloud/mesh deployment mode for Workload Identity Platform",
+  "description": "Envoy ext_authz gRPC adapter — cloud/mesh deployment mode for Workload Identity Defense (WID) Platform",
   "main": "src/adapter.js",
   "scripts": {
     "start": "node src/adapter.js",

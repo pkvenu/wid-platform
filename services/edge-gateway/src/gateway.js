@@ -19,7 +19,7 @@ const crypto = require('crypto');
 // ── Shared Core (same code used by ext-authz-adapter) ──
 const {
   parseJSON, log, setLogLevel, setStructuredLogs, httpRequest,
-  PolicyCache, CredentialBuffer, CircuitBreaker,
+  PolicyCache, CredentialBuffer, CircuitBreaker, RateLimiter,
   MetricsCollector, AuditBuffer, AIInspector, MCPInspector,
   sanitizePath, extractWorkloadName, buildAuditEntry,
   generateIptablesScript,
@@ -82,6 +82,11 @@ const CONFIG = {
   mcpInspectionEnabled: process.env.MCP_INSPECTION_ENABLED !== 'false',
   mcpServerHosts: (process.env.MCP_SERVER_HOSTS || '').split(',').filter(Boolean),
 
+  // Rate limiting (P2.6)
+  rateLimitEnabled: process.env.RATE_LIMIT_ENABLED === 'true',
+  rateLimitWindowMs: parseInt(process.env.RATE_LIMIT_WINDOW_MS) || 60000,
+  rateLimitMax: parseInt(process.env.RATE_LIMIT_MAX) || 1000,
+
   // Logging
   logLevel: process.env.LOG_LEVEL || 'info',
   structuredLogs: process.env.STRUCTURED_LOGS === 'true',
@@ -96,7 +101,7 @@ setStructuredLogs(CONFIG.structuredLogs);
 // =============================================================================
 
 function createOutboundProxy(deps) {
-  const { policyCache, credBuffer, policyBreaker, tokenBreaker, metrics, auditBuffer, aiInspector, mcpInspector } = deps;
+  const { policyCache, credBuffer, policyBreaker, tokenBreaker, metrics, auditBuffer, aiInspector, mcpInspector, rateLimiter } = deps;
 
   return http.createServer(async (req, res) => {
     const start = Date.now();
@@ -136,6 +141,25 @@ function createOutboundProxy(deps) {
       metrics.record('deny', Date.now() - start);
       res.writeHead(403, { 'Content-Type': 'application/json', 'x-wid-decision-id': decisionId });
       return res.end(JSON.stringify({ error: 'Chain depth exceeded', decision_id: decisionId }));
+    }
+
+    // Per-tenant rate limiting (P2.6)
+    if (rateLimiter && rateLimiter.enabled) {
+      // Extract tenant from x-wid-tenant header or fall back to source principal
+      const tenantKey = req.headers['x-wid-tenant'] || sourcePrincipal;
+      if (!rateLimiter.isAllowed(tenantKey)) {
+        const rlHeaders = rateLimiter.getRateLimitHeaders(tenantKey);
+        metrics.record('deny', Date.now() - start);
+        res.writeHead(429, {
+          'Content-Type': 'application/json',
+          'x-wid-decision-id': decisionId,
+          'X-RateLimit-Limit': String(rlHeaders.limit),
+          'X-RateLimit-Remaining': '0',
+          'X-RateLimit-Reset': String(rlHeaders.reset),
+          'Retry-After': String(Math.ceil((rlHeaders.reset * 1000 - Date.now()) / 1000)),
+        });
+        return res.end(JSON.stringify({ error: 'Rate limit exceeded', decision_id: decisionId }));
+      }
     }
 
     // Cache check
@@ -465,7 +489,7 @@ function resolveFailBehavior(workloadName) {
 
 async function main() {
   log('info', '═══════════════════════════════════════════════════════');
-  log('info', '  Edge Gateway — Workload Identity Platform');
+  log('info', '  Edge Gateway — Workload Identity Defense (WID) Platform');
   log('info', `  Workload: ${CONFIG.workloadName} | SPIFFE: ${CONFIG.spiffeId || '(auto)'}`);
   log('info', `  Outbound: :${CONFIG.outboundPort} | Inbound: :${CONFIG.inboundPort} | Admin: :${CONFIG.adminPort}`);
   log('info', `  Default: ${CONFIG.defaultMode} | Fail: ${CONFIG.failBehavior} | Cache: ${CONFIG.cacheEnabled ? 'ON' : 'OFF'}`);
@@ -504,7 +528,17 @@ async function main() {
     mcpHosts: CONFIG.mcpServerHosts,
   });
 
-  const deps = { policyCache, credBuffer, policyBreaker, tokenBreaker, metrics, auditBuffer, aiInspector, mcpInspector };
+  const rateLimiter = new RateLimiter({
+    windowMs: CONFIG.rateLimitWindowMs,
+    maxRequests: CONFIG.rateLimitMax,
+    enabled: CONFIG.rateLimitEnabled,
+  });
+  if (rateLimiter.enabled) {
+    rateLimiter.startCleanup(60000);
+    log('info', `Rate limiting enabled: ${CONFIG.rateLimitMax} req/${CONFIG.rateLimitWindowMs}ms`);
+  }
+
+  const deps = { policyCache, credBuffer, policyBreaker, tokenBreaker, metrics, auditBuffer, aiInspector, mcpInspector, rateLimiter };
 
   const outbound = createOutboundProxy(deps);
   const inbound = createInboundProxy(deps);
@@ -517,6 +551,7 @@ async function main() {
   const shutdown = () => {
     log('info', 'Shutting down...');
     auditBuffer.flush().then(() => auditBuffer.destroy());
+    rateLimiter.stopCleanup();
     outbound.close(); inbound.close(); admin.close();
     setTimeout(() => process.exit(0), 1000);
   };

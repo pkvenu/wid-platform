@@ -1,0 +1,29 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  test:
+    name: Run tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 18
+
+      - name: Install data-plane-core dependencies
+        working-directory: shared/data-plane-core
+        run: npm ci --ignore-scripts || npm install --ignore-scripts
+
+      - name: Run data-plane-core tests
+        working-directory: shared/data-plane-core
+        run: npm test
+
+      - name: Run TLS manager tests
+        working-directory: shared/data-plane-core
+        run: node --test test/tls-manager.test.js
