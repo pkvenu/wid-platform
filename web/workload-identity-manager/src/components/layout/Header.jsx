@@ -14,11 +14,12 @@ const ROUTE_META = {
   '/operations': { title: 'Operations' },
   '/demo': { title: 'Demo' },
   '/connectors': { title: 'Connectors' },
+  '/settings': { title: 'Organization Settings' },
 };
 
 const Header = () => {
   const location = useLocation();
-  const meta = ROUTE_META[location.pathname] || { title: 'Workload Identity' };
+  const meta = ROUTE_META[location.pathname] || { title: 'Workload Identity Defense' };
   const [serviceStatus, setServiceStatus] = useState({ count: 0, online: false, scanners: [] });
   const [showScanners, setShowScanners] = useState(false);
   const { theme, toggle, isDark } = useTheme();

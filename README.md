@@ -1,4 +1,4 @@
-# Workload Identity Director (WID)
+# Workload Identity Defense (WID) Platform
 
 **See every non-human identity. Know what it can reach. Enforce least privilege — progressively.**
 

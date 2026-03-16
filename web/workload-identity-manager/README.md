@@ -1,4 +1,4 @@
-# Workload Identity Platform — Attestation Architecture
+# Workload Identity Defense (WID) Platform — Attestation Architecture
 
 ## Overview
 

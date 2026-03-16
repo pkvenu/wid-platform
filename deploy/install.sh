@@ -3,7 +3,7 @@
 # WID Platform — Clean Install Script
 # =============================================================================
 #
-# Deploys the Workload Identity Platform in hub-and-spoke mode:
+# Deploys the Workload Identity Defense (WID) Platform in hub-and-spoke mode:
 #   Phase 1: Central control plane (simulated AWS on this machine)
 #   Phase 2: Local data plane with sample workloads + Edge Gateways
 #   Phase 3: Verify end-to-end federation
@@ -251,7 +251,7 @@ fi
 print_banner "INSTALLATION COMPLETE"
 
 echo "
-  ${GREEN}Your Workload Identity Platform is running!${NC}
+  ${GREEN}Your Workload Identity Defense (WID) Platform is running!${NC}
 
   ┌─────────────────────────────────────────────────────────────┐
   │  CENTRAL CONTROL PLANE                                      │

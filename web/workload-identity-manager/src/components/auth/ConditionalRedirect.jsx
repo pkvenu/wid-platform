@@ -4,6 +4,7 @@ import { useOnboarding } from '../../context/OnboardingContext';
 
 export default function ConditionalRedirect() {
   const { hasConnectors, loading } = useOnboarding();
+  const onboardingComplete = localStorage.getItem('wid_onboarding_complete') === 'true';
 
   if (loading) {
     return (
@@ -13,5 +14,16 @@ export default function ConditionalRedirect() {
     );
   }
 
-  return <Navigate to={hasConnectors ? '/workloads' : '/connectors'} replace />;
+  // Not onboarded yet → wizard
+  if (!onboardingComplete && !hasConnectors) {
+    return <Navigate to="/onboarding" replace />;
+  }
+
+  // Onboarded but no connectors → connectors page
+  if (!hasConnectors) {
+    return <Navigate to="/connectors" replace />;
+  }
+
+  // All good → workloads
+  return <Navigate to="/workloads" replace />;
 }

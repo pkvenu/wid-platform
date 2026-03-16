@@ -705,7 +705,7 @@ class ProtocolScanner {
         // ── JWS Signature Verification ──
         if (card.signature) {
           try {
-            const { verifyAgentCard } = require('../../../../shared/agent-card-signer');
+            const { verifyAgentCard } = require('../shared-loader').agentCardSigner;
             // Fetch JWKS from token-service (cached via _jwksCache)
             const publicKeyPem = await this._getSigningPublicKey();
             if (publicKeyPem) {

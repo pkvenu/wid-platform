@@ -1,6 +1,6 @@
 AWSTemplateFormatVersion: '2010-09-09'
 Description: >
-  WID Discovery Role — Creates a read-only IAM role for Workload Identity Director
+  WID Discovery Role — Creates a read-only IAM role for Workload Identity Defense
   to discover and inventory AWS resources. No write access granted.
 
 Parameters:

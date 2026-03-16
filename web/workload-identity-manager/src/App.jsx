@@ -6,6 +6,7 @@ import ProtectedRoute from './components/auth/ProtectedRoute';
 import OnboardingGuard from './components/auth/OnboardingGuard';
 import ConditionalRedirect from './components/auth/ConditionalRedirect';
 import Login from './pages/Login';
+import OnboardingWizard from './pages/OnboardingWizard';
 import Dashboard from './pages/Dashboard';
 import Policies from './pages/Policies';
 import Workloads from './pages/Workloads';
@@ -16,6 +17,7 @@ import Operations from './pages/Operations';
 import DemoFlow from './pages/DemoFlow';
 import Connectors from './pages/Connectors';
 import Compliance from './pages/Compliance';
+import TenantSettings from './pages/TenantSettings';
 
 function App() {
   return (
@@ -34,6 +36,10 @@ function App() {
       />
       <Routes>
         <Route path="/login" element={<Login />} />
+        {/* Onboarding wizard — standalone (no sidebar/layout) */}
+        <Route path="/onboarding" element={<ProtectedRoute />}>
+          <Route index element={<OnboardingWizard />} />
+        </Route>
         <Route path="/" element={<ProtectedRoute />}>
           <Route element={<Layout />}>
             {/* Connectors is always accessible (onboarding landing page) */}
@@ -51,6 +57,7 @@ function App() {
               <Route path="templates" element={<Templates />} />
               <Route path="operations" element={<Operations />} />
               <Route path="demo" element={<DemoFlow />} />
+              <Route path="settings" element={<TenantSettings />} />
             </Route>
           </Route>
         </Route>

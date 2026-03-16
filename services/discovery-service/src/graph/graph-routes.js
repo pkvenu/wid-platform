@@ -18,58 +18,72 @@ const { detectCategory } = require('./categorizer');
 const { RemediationRenderer } = require('./remediation-renderer');
 const { RemediationExecutor } = require('./remediation-executor');
 
-// In-memory cache (rebuilt on each scan)
-let graphCache = null;
-let lastGraphScan = null;
+// Tenant-scoped in-memory cache (rebuilt on each scan)
+const graphCaches = new Map(); // tenantId → { data, scanTime }
+
+function getGraphCache(tenantId) {
+  const entry = graphCaches.get(tenantId || '_system');
+  if (!entry) return { data: null, scanTime: null };
+  return { data: entry.data, scanTime: entry.scanTime };
+}
+
+function setGraphCache(tenantId, data, scanTime) {
+  graphCaches.set(tenantId || '_system', { data, scanTime });
+}
 
 // ── Cold-start: load last graph from DB so first GET /graph is not empty ──
-async function warmGraphCache(dbClient) {
+// At startup there is no req context, so we use pool.query directly (system-level)
+async function warmGraphCache(pool) {
   try {
-    const row = await dbClient.query("SELECT graph_data, generated_at FROM identity_graph WHERE id = 'latest' LIMIT 1");
+    const row = await pool.query("SELECT graph_data, generated_at FROM identity_graph WHERE id = 'latest' LIMIT 1");
     if (row.rows.length > 0 && row.rows[0].graph_data) {
       const data = typeof row.rows[0].graph_data === 'string'
         ? JSON.parse(row.rows[0].graph_data) : row.rows[0].graph_data;
       const age = Date.now() - new Date(row.rows[0].generated_at).getTime();
       if (age < 30 * 60 * 1000) { // 30-minute TTL
-        graphCache = data;
-        lastGraphScan = row.rows[0].generated_at;
+        setGraphCache('_system', data, row.rows[0].generated_at);
         console.log(`[graph] Cache warm: ${data.nodes?.length || 0} nodes, ${data.relationships?.length || 0} edges (age ${Math.round(age/1000)}s)`);
       }
     }
   } catch (e) { /* identity_graph table may not exist yet */ }
 }
 
-function mountGraphRoutes(app, dbClient) {
-  warmGraphCache(dbClient).catch(() => {});
+function mountGraphRoutes(app, pool) {
+  // DB helper: use tenant-scoped req.db when available, fall back to pool
+  const db = (req) => req.db || { query: (text, params) => pool.query(text, params) };
 
-  // Seed remediation intents from CONTROL_CATALOG (idempotent)
-  seedRemediationIntents(dbClient).catch(e =>
+  warmGraphCache(pool).catch(() => {});
+
+  // Seed remediation intents from CONTROL_CATALOG (idempotent) — system-level, use pool
+  seedRemediationIntents(pool).catch(e =>
     console.log(`  [seed] Remediation seed skipped: ${e.message}`)
   );
 
   // Seed finding type metadata (idempotent)
-  seedFindingTypeMetadata(dbClient).catch(e =>
+  seedFindingTypeMetadata(pool).catch(e =>
     console.log(`  [seed] Finding type metadata seed skipped: ${e.message}`)
   );
 
   // Seed provider registry from defaults + initialize singleton (idempotent)
-  seedProviderRegistry(dbClient).catch(e =>
+  seedProviderRegistry(pool).catch(e =>
     console.log(`  [seed] Provider registry seed skipped: ${e.message}`)
   );
 
   // ── GET /api/v1/graph — Full identity graph ──
   app.get('/api/v1/graph', async (req, res) => {
     try {
+      const tenantId = req.tenantId || '_system';
+      const { data: cachedGraph, scanTime } = getGraphCache(tenantId);
       let graphResult;
-      if (graphCache) {
-        graphResult = { ...graphCache, cached: true, last_scan: lastGraphScan };
+      if (cachedGraph) {
+        graphResult = { ...cachedGraph, cached: true, last_scan: scanTime };
       } else {
-        graphResult = await buildGraph(dbClient);
+        graphResult = await buildGraph(pool);
       }
 
       // Enrich attack paths with remediation status from deployed policies
       try {
-        const polRes = await dbClient.query(
+        const polRes = await db(req).query(
           `SELECT p.id, p.template_id, p.enforcement_mode, p.enabled, p.name,
                   p.client_workload_id, p.attack_path_id,
                   p.last_evaluated, p.evaluation_count,
@@ -81,7 +95,7 @@ function mountGraphRoutes(app, dbClient) {
         // Load finding → template mappings
         let findingMap = {};
         try {
-          const frmRes = await dbClient.query('SELECT finding_type, template_id FROM finding_remediation_map');
+          const frmRes = await db(req).query('SELECT finding_type, template_id FROM finding_remediation_map');
           for (const row of frmRes.rows) {
             if (!findingMap[row.finding_type]) findingMap[row.finding_type] = [];
             findingMap[row.finding_type].push(row.template_id);
@@ -137,7 +151,7 @@ function mountGraphRoutes(app, dbClient) {
             if (!ap.ranked_controls || ap.ranked_controls.length === 0) {
               const allNodes = graphResult.nodes || [];
               const allRels = graphResult.relationships || [];
-              ap.ranked_controls = await scoreControlsAsync(ap, allNodes, allRels, dbClient);
+              ap.ranked_controls = await scoreControlsAsync(ap, allNodes, allRels, pool);
               if (!ap.credential_chain || ap.credential_chain.length === 0) {
                 ap.credential_chain = computeCredentialChain(ap, allNodes, allRels);
               }
@@ -169,14 +183,16 @@ function mountGraphRoutes(app, dbClient) {
   // ── GET /api/v1/graph/paths — Attack paths only ──
   app.get('/api/v1/graph/paths', async (req, res) => {
     try {
-      if (graphCache) {
+      const tenantId = req.tenantId || '_system';
+      const { data: cachedGraph, scanTime } = getGraphCache(tenantId);
+      if (cachedGraph) {
         return res.json({
-          attack_paths: graphCache.attack_paths,
-          summary: graphCache.summary,
-          last_scan: lastGraphScan,
+          attack_paths: cachedGraph.attack_paths,
+          summary: cachedGraph.summary,
+          last_scan: scanTime,
         });
       }
-      const graph = await buildGraph(dbClient);
+      const graph = await buildGraph(pool);
       res.json({ attack_paths: graph.attack_paths, summary: graph.summary });
     } catch (error) {
       res.status(500).json({ error: error.message });
@@ -201,7 +217,7 @@ function mountGraphRoutes(app, dbClient) {
              FROM workloads WHERE last_attestation IS NOT NULL
              ORDER BY last_attestation DESC LIMIT $1`;
         const params = workload_id ? [workload_id] : [Math.min(limit, 100)];
-        const attestRes = await dbClient.query(attestQ, params);
+        const attestRes = await db(req).query(attestQ, params);
         for (const row of attestRes.rows) {
           timeline.push({
             type: 'attestation',
@@ -226,7 +242,7 @@ function mountGraphRoutes(app, dbClient) {
           ? `SELECT * FROM authorization_events WHERE workload_id = $1 ORDER BY timestamp DESC LIMIT $2`
           : `SELECT * FROM authorization_events ORDER BY timestamp DESC LIMIT $1`;
         const authParams = workload_id ? [workload_id, limit] : [Math.min(limit, 100)];
-        const authRes = await dbClient.query(authQ, authParams);
+        const authRes = await db(req).query(authQ, authParams);
         for (const row of authRes.rows) {
           // Check if this event violates any policy
           const isViolation = row.decision === 'deny' || row.policy_violated;
@@ -257,7 +273,7 @@ function mountGraphRoutes(app, dbClient) {
           ? `SELECT * FROM policy_evaluations WHERE workload_id = $1 ORDER BY evaluated_at DESC LIMIT $2`
           : `SELECT * FROM policy_evaluations ORDER BY evaluated_at DESC LIMIT $1`;
         const polParams = workload_id ? [workload_id, limit] : [Math.min(limit, 100)];
-        const polRes = await dbClient.query(polQ, polParams);
+        const polRes = await db(req).query(polQ, polParams);
         for (const row of polRes.rows) {
           timeline.push({
             type: 'policy',
@@ -277,11 +293,12 @@ function mountGraphRoutes(app, dbClient) {
       } catch (e) { /* table might not exist yet */ }
 
       // 4. Graph findings (attack paths as events)
-      if (graphCache) {
-        for (const ap of graphCache.attack_paths) {
+      const { data: timelineGraphCache } = getGraphCache(req.tenantId || '_system');
+      if (timelineGraphCache) {
+        for (const ap of timelineGraphCache.attack_paths) {
           timeline.push({
             type: 'graph_finding',
-            timestamp: graphCache.generated_at,
+            timestamp: timelineGraphCache.generated_at,
             summary: ap.title,
             detail: {
               description: ap.description,
@@ -310,13 +327,13 @@ function mountGraphRoutes(app, dbClient) {
   // ── POST /api/v1/graph/scan — Trigger relationship scan ──
   app.post('/api/v1/graph/scan', async (req, res) => {
     try {
-      const graph = await buildGraph(dbClient);
+      const graph = await buildGraph(pool);
 
       // ── AUDIT LOG: Persist each finding/attack path for compliance timeline ──
-      if (graph.attack_paths && dbClient) {
+      if (graph.attack_paths && pool) {
         for (const ap of graph.attack_paths) {
           try {
-            await dbClient.query(`
+            await db(req).query(`
               INSERT INTO audit_events (event_type, actor, workload_name, detail)
               VALUES ($1, $2, $3, $4)
             `, [
@@ -339,7 +356,7 @@ function mountGraphRoutes(app, dbClient) {
 
       // ── AUDIT LOG: Discovery event (what was found this scan) ──
       try {
-        await dbClient.query(`
+        await db(req).query(`
           INSERT INTO audit_events (event_type, actor, detail)
           VALUES ($1, $2, $3)
         `, [
@@ -369,10 +386,11 @@ function mountGraphRoutes(app, dbClient) {
 
       // Build mock attack path for scoring
       const mockPath = { finding_type: findingType, workload };
-      const nodes = graphCache?.nodes || [];
-      const rels = graphCache?.relationships || [];
+      const { data: controlGraphCache } = getGraphCache(req.tenantId || '_system');
+      const nodes = controlGraphCache?.nodes || [];
+      const rels = controlGraphCache?.relationships || [];
 
-      const controls = await scoreControlsAsync(mockPath, nodes, rels, dbClient);
+      const controls = await scoreControlsAsync(mockPath, nodes, rels, pool);
       res.json({
         finding_type: findingType,
         workload,
@@ -391,12 +409,13 @@ function mountGraphRoutes(app, dbClient) {
       const nodeId = req.params.nodeId;
       const { finding_type } = req.query;
 
-      if (!graphCache) {
+      const { data: remGraphCache } = getGraphCache(req.tenantId || '_system');
+      if (!remGraphCache) {
         return res.status(404).json({ error: 'Graph not loaded. Trigger a scan first.' });
       }
 
       // Find the node (match by id, workload_id, or label)
-      const node = graphCache.nodes.find(n =>
+      const node = remGraphCache.nodes.find(n =>
         n.id === nodeId ||
         n.workload_id === nodeId ||
         (n.label || '').toLowerCase() === nodeId.toLowerCase()
@@ -406,7 +425,7 @@ function mountGraphRoutes(app, dbClient) {
       }
 
       // Find attack paths for this node
-      let attackPaths = (graphCache.attack_paths || []).filter(ap => {
+      let attackPaths = (remGraphCache.attack_paths || []).filter(ap => {
         const wl = (ap.workload || '').toLowerCase();
         const nl = (node.label || '').toLowerCase();
         return wl === nl || (ap.entry_points || []).some(ep => ep.toLowerCase() === nl);
@@ -421,8 +440,8 @@ function mountGraphRoutes(app, dbClient) {
         return res.json({ node_id: nodeId, node_label: node.label, remediations: [], note: 'No attack paths for this node' });
       }
 
-      const renderer = new RemediationRenderer(dbClient);
-      const context = renderer.buildContext(node, attackPaths, graphCache.nodes, graphCache.relationships);
+      const renderer = new RemediationRenderer(pool);
+      const context = renderer.buildContext(node, attackPaths, remGraphCache.nodes, remGraphCache.relationships);
       const remediations = await renderer.render(context);
 
       res.json({
@@ -441,8 +460,8 @@ function mountGraphRoutes(app, dbClient) {
 
   // ── POST /api/v1/graph/reset — Clear graph cache for fresh demo ──
   app.post('/api/v1/graph/reset', async (req, res) => {
-    graphCache = null;
-    lastGraphScan = null;
+    const tenantId = req.tenantId || '_system';
+    graphCaches.delete(tenantId);
     res.json({ message: 'Graph cache cleared. Next GET /graph will rebuild from DB.' });
   });
 
@@ -464,12 +483,12 @@ function mountGraphRoutes(app, dbClient) {
       if (enabled !== undefined) { conditions.push(`enabled = $${pi}`); params.push(enabled === 'true'); pi++; }
 
       const where = conditions.length > 0 ? `WHERE ${conditions.join(' AND ')}` : '';
-      const countRes = await dbClient.query(`SELECT COUNT(*) FROM remediation_intents ${where}`, params);
+      const countRes = await db(req).query(`SELECT COUNT(*) FROM remediation_intents ${where}`, params);
       const total = parseInt(countRes.rows[0].count);
 
       params.push(parseInt(limit)); pi++;
       params.push(parseInt(offset)); pi++;
-      const result = await dbClient.query(
+      const result = await db(req).query(
         `SELECT ri.*, (SELECT COUNT(*) FROM remediation_templates rt WHERE rt.intent_id = ri.id) AS template_count
          FROM remediation_intents ri ${where}
          ORDER BY ri.updated_at DESC
@@ -486,10 +505,10 @@ function mountGraphRoutes(app, dbClient) {
   app.get('/api/v1/graph/remediation-intents/:id', async (req, res) => {
     try {
       const { id } = req.params;
-      const intentRes = await dbClient.query('SELECT * FROM remediation_intents WHERE id = $1', [id]);
+      const intentRes = await db(req).query('SELECT * FROM remediation_intents WHERE id = $1', [id]);
       if (intentRes.rows.length === 0) return res.status(404).json({ error: `Intent not found: ${id}` });
 
-      const tmplRes = await dbClient.query(
+      const tmplRes = await db(req).query(
         'SELECT * FROM remediation_templates WHERE intent_id = $1 ORDER BY priority ASC, created_at ASC', [id]
       );
 
@@ -518,7 +537,7 @@ function mountGraphRoutes(app, dbClient) {
         return res.status(400).json({ error: 'Required: path_break, feasibility, operational' });
       }
 
-      const result = await dbClient.query(`
+      const result = await db(req).query(`
         INSERT INTO remediation_intents (
           id, control_id, name, description, goal, action_type, remediation_type,
           finding_types, scope, resource_types, path_break, feasibility, operational,
@@ -550,7 +569,7 @@ function mountGraphRoutes(app, dbClient) {
         rollback_strategy, template_id, enabled,
       } = req.body;
 
-      const result = await dbClient.query(`
+      const result = await db(req).query(`
         UPDATE remediation_intents SET
           name = COALESCE($2, name),
           description = COALESCE($3, description),
@@ -594,7 +613,7 @@ function mountGraphRoutes(app, dbClient) {
   app.delete('/api/v1/graph/remediation-intents/:id', async (req, res) => {
     try {
       const { id } = req.params;
-      const result = await dbClient.query('DELETE FROM remediation_intents WHERE id = $1 RETURNING id', [id]);
+      const result = await db(req).query('DELETE FROM remediation_intents WHERE id = $1 RETURNING id', [id]);
       if (result.rows.length === 0) return res.status(404).json({ error: `Intent not found: ${id}` });
       res.json({ deleted: id });
     } catch (error) {
@@ -613,10 +632,10 @@ function mountGraphRoutes(app, dbClient) {
       }
 
       // Verify intent exists
-      const intentCheck = await dbClient.query('SELECT id FROM remediation_intents WHERE id = $1', [intentId]);
+      const intentCheck = await db(req).query('SELECT id FROM remediation_intents WHERE id = $1', [intentId]);
       if (intentCheck.rows.length === 0) return res.status(404).json({ error: `Intent not found: ${intentId}` });
 
-      const result = await dbClient.query(`
+      const result = await db(req).query(`
         INSERT INTO remediation_templates (
           intent_id, provider, channel, title, template_body,
           resource_type, variables, validate_template, rollback_template, priority
@@ -642,7 +661,7 @@ function mountGraphRoutes(app, dbClient) {
   app.delete('/api/v1/graph/remediation-templates/:templateId', async (req, res) => {
     try {
       const { templateId } = req.params;
-      const result = await dbClient.query('DELETE FROM remediation_templates WHERE id = $1 RETURNING id', [parseInt(templateId)]);
+      const result = await db(req).query('DELETE FROM remediation_templates WHERE id = $1 RETURNING id', [parseInt(templateId)]);
       if (result.rows.length === 0) return res.status(404).json({ error: `Template not found: ${templateId}` });
       res.json({ deleted: parseInt(templateId) });
     } catch (error) {
@@ -654,7 +673,7 @@ function mountGraphRoutes(app, dbClient) {
   // REMEDIATION EXECUTIONS — Execute, approve, rollback remediation actions
   // ==========================================================================
 
-  const executor = new RemediationExecutor(dbClient);
+  const executor = new RemediationExecutor(pool);
 
   // ── POST /api/v1/graph/remediation/:nodeId/execute — Request execution ──
   app.post('/api/v1/graph/remediation/:nodeId/execute', async (req, res) => {
@@ -672,11 +691,12 @@ function mountGraphRoutes(app, dbClient) {
 
       if (!commands) {
         // Auto-render from intent templates
-        const graph = graphCache || await buildGraph(dbClient);
+        const { data: execGraphCache } = getGraphCache(req.tenantId || '_system');
+        const graph = execGraphCache || await buildGraph(pool);
         const node = graph.nodes.find(n => n.id === nodeId);
         if (!node) return res.status(404).json({ error: `Node not found: ${nodeId}` });
 
-        const renderer = new RemediationRenderer(dbClient);
+        const renderer = new RemediationRenderer(pool);
         const attackPaths = (graph.attack_paths || []).filter(ap =>
           ap.workload_id === nodeId || ap.source_id === nodeId
         );
@@ -765,7 +785,7 @@ function mountGraphRoutes(app, dbClient) {
       // Fetch from finding_type_metadata table (DB source of truth)
       let dbTypes = [];
       try {
-        const result = await dbClient.query(`
+        const result = await db(req).query(`
           SELECT ftm.finding_type AS id, ftm.label, ftm.description, ftm.severity, ftm.category, ftm.enabled,
                  (SELECT COUNT(*) FROM remediation_intents ri WHERE ftm.finding_type = ANY(ri.finding_types) AND ri.enabled = true) AS control_count
           FROM finding_type_metadata ftm
@@ -782,7 +802,7 @@ function mountGraphRoutes(app, dbClient) {
       }
 
       // Fallback: derive from remediation_intents finding_types arrays
-      const fallbackRes = await dbClient.query(`
+      const fallbackRes = await db(req).query(`
         SELECT ft AS id, COUNT(*) AS control_count
         FROM (SELECT DISTINCT unnest(finding_types) AS ft FROM remediation_intents WHERE enabled = true) sub
         GROUP BY ft ORDER BY ft
@@ -810,7 +830,7 @@ function mountGraphRoutes(app, dbClient) {
         return res.status(400).json({ error: 'Required: finding_type, label, description' });
       }
 
-      const result = await dbClient.query(`
+      const result = await db(req).query(`
         INSERT INTO finding_type_metadata (finding_type, label, description, severity, category)
         VALUES ($1, $2, $3, $4, $5)
         ON CONFLICT (finding_type) DO UPDATE SET
@@ -843,7 +863,7 @@ function mountGraphRoutes(app, dbClient) {
       q += ` ORDER BY created_at DESC LIMIT $${i}`;
       p.push(Math.min(parseInt(rawLimit) || 100, 500));
 
-      const r = await dbClient.query(q, p);
+      const r = await db(req).query(q, p);
       res.json({ total: r.rows.length, fingerprints: r.rows });
     } catch (e) {
       if (e.message?.includes('does not exist')) {
@@ -856,7 +876,7 @@ function mountGraphRoutes(app, dbClient) {
   // GET /api/v1/mcp/fingerprints/:workloadName/drift — Drift events for a specific server
   app.get('/api/v1/mcp/fingerprints/:workloadName/drift', async (req, res) => {
     try {
-      const r = await dbClient.query(
+      const r = await db(req).query(
         `SELECT * FROM mcp_fingerprints
          WHERE workload_name = $1 AND drift_detected = TRUE
          ORDER BY created_at DESC LIMIT 50`,
@@ -2860,9 +2880,8 @@ async function buildGraph(dbClient) {
     }
   }
 
-  // Cache it
-  graphCache = graphResult;
-  lastGraphScan = new Date().toISOString();
+  // Cache it (system-level since buildGraph is called outside request context)
+  setGraphCache('_system', graphResult, new Date().toISOString());
 
   // ── Agent tagging: back-propagate protocol scanner agent/MCP detection to workloads ──
   try {
@@ -3440,9 +3459,13 @@ function scoreControlsWithCandidates(candidates, attackPath, allNodes, allRels) 
   return scored;
 }
 
-function clearGraphCache() {
-  graphCache = null;
-  lastGraphScan = null;
+function clearGraphCache(tenantId) {
+  if (tenantId) {
+    graphCaches.delete(tenantId);
+  } else {
+    // Clear all tenant caches
+    graphCaches.clear();
+  }
 }
 
 // ── Seed Provider Registry from defaults ───────────────────────────────────

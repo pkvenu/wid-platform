@@ -97,16 +97,19 @@ const PROVIDER_FIELDS = {
 /**
  * Mount connector routes on the Express app.
  * @param {import('express').Application} app
- * @param {import('pg').Client} dbClient
+ * @param {import('pg').Pool} pool
  * @param {object} deps - { scannerRegistry, ScannerConfig, runConnectorScan }
  */
-function mountConnectorRoutes(app, dbClient, deps = {}) {
+function mountConnectorRoutes(app, pool, deps = {}) {
   const { runConnectorScan } = deps;
+
+  // DB helper: use tenant-scoped req.db when available, fall back to pool
+  const db = (req) => req.db || { query: (text, params) => pool.query(text, params) };
 
   // ─── Ensure connectors table exists (idempotent migration) ──────────
   (async () => {
     try {
-      await dbClient.query(`
+      await pool.query(`
         CREATE TABLE IF NOT EXISTS connectors (
           id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
           name TEXT NOT NULL,
@@ -146,7 +149,7 @@ function mountConnectorRoutes(app, dbClient, deps = {}) {
   // ═════════════════════════════════════════════════════════════════════
   app.get('/api/v1/connectors', async (req, res) => {
     try {
-      const { rows } = await dbClient.query(`
+      const { rows } = await db(req).query(`
         SELECT c.id, c.name, c.description, c.provider, c.status, c.mode, c.config,
                c.last_scan_at, c.last_scan_status, c.last_scan_duration_ms,
                c.error_message, c.gateway_env_name, c.gateway_connected, c.gateway_last_heartbeat,
@@ -313,7 +316,7 @@ function mountConnectorRoutes(app, dbClient, deps = {}) {
       }
 
       // Insert connector (without credentials)
-      const { rows } = await dbClient.query(`
+      const { rows } = await db(req).query(`
         INSERT INTO connectors (name, description, provider, mode, config, status)
         VALUES ($1, $2, $3, $4, $5, 'pending')
         RETURNING *
@@ -325,14 +328,14 @@ function mountConnectorRoutes(app, dbClient, deps = {}) {
       if (credentials) {
         try {
           const credRef = await storeCredentials(connector.id, provider, credentials);
-          await dbClient.query(
+          await db(req).query(
             'UPDATE connectors SET credential_ref = $1 WHERE id = $2',
             [credRef, connector.id]
           );
           connector.credential_ref = credRef;
         } catch (credErr) {
           console.error('[connectors] Credential storage failed:', credErr.message);
-          await dbClient.query(
+          await db(req).query(
             "UPDATE connectors SET status = 'error', error_message = $1, error_at = NOW() WHERE id = $2",
             [sanitizeErrorMessage(`Credential storage failed: ${credErr.message}`), connector.id]
           );
@@ -353,7 +356,7 @@ function mountConnectorRoutes(app, dbClient, deps = {}) {
   // ═════════════════════════════════════════════════════════════════════
   app.get('/api/v1/connectors/:id', async (req, res) => {
     try {
-      const { rows } = await dbClient.query(
+      const { rows } = await db(req).query(
         `SELECT id, name, description, provider, status, mode, config,
                 last_scan_at, last_scan_status, last_scan_duration_ms, workload_count,
                 error_message, gateway_env_name, gateway_connected, gateway_last_heartbeat,
@@ -382,7 +385,7 @@ function mountConnectorRoutes(app, dbClient, deps = {}) {
       const connectorId = req.params.id;
 
       // Check exists
-      const existing = await dbClient.query('SELECT * FROM connectors WHERE id = $1', [connectorId]);
+      const existing = await db(req).query('SELECT * FROM connectors WHERE id = $1', [connectorId]);
       if (existing.rows.length === 0) {
         return res.status(404).json({ error: 'Connector not found' });
       }
@@ -400,7 +403,7 @@ function mountConnectorRoutes(app, dbClient, deps = {}) {
 
       if (updates.length > 0) {
         values.push(connectorId);
-        await dbClient.query(
+        await db(req).query(
           `UPDATE connectors SET ${updates.join(', ')} WHERE id = $${paramIdx}`,
           values
         );
@@ -412,7 +415,7 @@ function mountConnectorRoutes(app, dbClient, deps = {}) {
         await storeCredentials(connectorId, provider, credentials);
       }
 
-      const { rows } = await dbClient.query(
+      const { rows } = await db(req).query(
         `SELECT id, name, description, provider, status, mode, config,
                 last_scan_at, last_scan_status, workload_count,
                 created_at, updated_at
@@ -440,29 +443,29 @@ function mountConnectorRoutes(app, dbClient, deps = {}) {
       const purge = req.query.purge === 'true';
 
       // Check exists
-      const { rows } = await dbClient.query('SELECT id, name, provider FROM connectors WHERE id = $1', [connectorId]);
+      const { rows } = await db(req).query('SELECT id, name, provider FROM connectors WHERE id = $1', [connectorId]);
       if (rows.length === 0) {
         return res.status(404).json({ error: 'Connector not found' });
       }
 
       // Count affected workloads
-      const countResult = await dbClient.query('SELECT COUNT(*)::int AS cnt FROM workloads WHERE connector_id = $1', [connectorId]);
+      const countResult = await db(req).query('SELECT COUNT(*)::int AS cnt FROM workloads WHERE connector_id = $1', [connectorId]);
       const workloadsAffected = countResult.rows[0].cnt;
 
       if (purge) {
         // Delete workloads discovered by this connector (removes them from graph)
-        await dbClient.query('DELETE FROM workloads WHERE connector_id = $1', [connectorId]);
+        await db(req).query('DELETE FROM workloads WHERE connector_id = $1', [connectorId]);
         console.log(`[connectors] Purged ${workloadsAffected} workloads for connector ${connectorId}`);
       } else {
         // Unlink workloads (they remain in DB as archived/unlinked)
-        await dbClient.query('UPDATE workloads SET connector_id = NULL WHERE connector_id = $1', [connectorId]);
+        await db(req).query('UPDATE workloads SET connector_id = NULL WHERE connector_id = $1', [connectorId]);
       }
 
       // Delete credentials from Secret Manager
       await deleteCredentials(connectorId);
 
       // Delete connector record
-      await dbClient.query('DELETE FROM connectors WHERE id = $1', [connectorId]);
+      await db(req).query('DELETE FROM connectors WHERE id = $1', [connectorId]);
 
       // Invalidate graph cache so the identity graph reflects the change
       clearGraphCache();
@@ -487,13 +490,13 @@ function mountConnectorRoutes(app, dbClient, deps = {}) {
         return res.status(429).json({ error: 'Too many test requests. Try again in a minute.' });
       }
 
-      const { rows } = await dbClient.query('SELECT * FROM connectors WHERE id = $1', [connectorId]);
+      const { rows } = await db(req).query('SELECT * FROM connectors WHERE id = $1', [connectorId]);
       if (rows.length === 0) {
         return res.status(404).json({ error: 'Connector not found' });
       }
 
       const connector = rows[0];
-      await dbClient.query(
+      await db(req).query(
         "UPDATE connectors SET status = 'validating' WHERE id = $1",
         [connectorId]
       );
@@ -501,7 +504,7 @@ function mountConnectorRoutes(app, dbClient, deps = {}) {
       // Retrieve stored credentials
       const credData = await getCredentials(connectorId);
       if (!credData || !credData.credentials) {
-        await dbClient.query(
+        await db(req).query(
           "UPDATE connectors SET status = 'error', error_message = 'No credentials stored', error_at = NOW() WHERE id = $1",
           [connectorId]
         );
@@ -512,13 +515,13 @@ function mountConnectorRoutes(app, dbClient, deps = {}) {
       const testResult = await testProviderCredentials(connector.provider, credData.credentials, connector.config);
 
       if (testResult.valid) {
-        await dbClient.query(
+        await db(req).query(
           "UPDATE connectors SET status = 'active', error_message = NULL, consecutive_errors = 0 WHERE id = $1",
           [connectorId]
         );
         res.json({ valid: true, details: testResult.details });
       } else {
-        await dbClient.query(
+        await db(req).query(
           "UPDATE connectors SET status = 'error', error_message = $1, error_at = NOW(), consecutive_errors = consecutive_errors + 1 WHERE id = $2",
           [testResult.error, connectorId]
         );
@@ -542,7 +545,7 @@ function mountConnectorRoutes(app, dbClient, deps = {}) {
         return res.status(429).json({ error: 'Scan already ran recently. Try again in a few minutes.' });
       }
 
-      const { rows } = await dbClient.query('SELECT * FROM connectors WHERE id = $1', [connectorId]);
+      const { rows } = await db(req).query('SELECT * FROM connectors WHERE id = $1', [connectorId]);
       if (rows.length === 0) {
         return res.status(404).json({ error: 'Connector not found' });
       }
@@ -555,7 +558,7 @@ function mountConnectorRoutes(app, dbClient, deps = {}) {
       }
 
       // Mark scan as running
-      await dbClient.query(
+      await db(req).query(
         "UPDATE connectors SET last_scan_status = 'running', last_scan_at = NOW() WHERE id = $1",
         [connectorId]
       );
@@ -571,7 +574,7 @@ function mountConnectorRoutes(app, dbClient, deps = {}) {
       const connConfig = typeof connector.config === 'string' ? JSON.parse(connector.config) : (connector.config || {});
       const hasConfigFallback = providerDef?.required?.every(f => credentials[f] || connConfig[f]);
       if (needsSecrets && !hasConfigFallback) {
-        await dbClient.query(
+        await db(req).query(
           "UPDATE connectors SET last_scan_status = 'failed', error_message = 'No credentials stored' WHERE id = $1",
           [connectorId]
         );
@@ -593,20 +596,20 @@ function mountConnectorRoutes(app, dbClient, deps = {}) {
       // Background scan
       const startTime = Date.now();
       try {
-        const workloads = await runProviderScan(connector, credentials, dbClient, deps);
+        const workloads = await runProviderScan(connector, credentials, pool, deps);
         const duration = Date.now() - startTime;
 
         // Use live DB count (includes workloads from all scan sources, not just this scan)
         let liveCount = workloads.length;
         try {
-          const { rows: countRows } = await dbClient.query(
+          const { rows: countRows } = await db(req).query(
             'SELECT COUNT(*)::int AS cnt FROM workloads WHERE cloud_provider = $1',
             [connector.provider]
           );
           liveCount = countRows[0]?.cnt || workloads.length;
         } catch { /* fallback to scan count */ }
 
-        await dbClient.query(
+        await db(req).query(
           `UPDATE connectors SET
             last_scan_status = 'completed',
             last_scan_duration_ms = $1,
@@ -626,7 +629,7 @@ function mountConnectorRoutes(app, dbClient, deps = {}) {
         }
       } catch (scanErr) {
         const duration = Date.now() - startTime;
-        await dbClient.query(
+        await db(req).query(
           `UPDATE connectors SET
             last_scan_status = 'failed',
             last_scan_duration_ms = $1,
@@ -650,16 +653,16 @@ function mountConnectorRoutes(app, dbClient, deps = {}) {
   app.post('/api/v1/connectors/purge', async (req, res) => {
     try {
       // Delete workloads linked to connectors
-      const wRes = await dbClient.query('DELETE FROM workloads WHERE connector_id IS NOT NULL');
+      const wRes = await db(req).query('DELETE FROM workloads WHERE connector_id IS NOT NULL');
       // Delete all connectors
-      const cRes = await dbClient.query('DELETE FROM connectors');
+      const cRes = await db(req).query('DELETE FROM connectors');
       // Clean up credential store entries
       const connectorIds = [];
       // Also delete workloads with no connector (orphans from scans)
-      const oRes = await dbClient.query('DELETE FROM workloads');
+      const oRes = await db(req).query('DELETE FROM workloads');
       // Clear related tables
-      await dbClient.query('DELETE FROM discovery_scans').catch(() => {});
-      await dbClient.query('DELETE FROM targets').catch(() => {});
+      await db(req).query('DELETE FROM discovery_scans').catch(() => {});
+      await db(req).query('DELETE FROM targets').catch(() => {});
 
       console.log(`[connectors] PURGE: deleted ${cRes.rowCount} connectors, ${wRes.rowCount + oRes.rowCount} workloads`);
 

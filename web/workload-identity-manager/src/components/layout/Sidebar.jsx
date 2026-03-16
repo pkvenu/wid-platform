@@ -11,6 +11,7 @@ import {
   PanelLeftClose,
   PanelLeftOpen,
   ClipboardCheck,
+  Settings,
 } from 'lucide-react';
 import { useAuth } from '../../context/AuthContext';
 import { useOnboarding } from '../../context/OnboardingContext';
@@ -22,16 +23,18 @@ const ALL_NAV_ITEMS = [
   { icon: Shield, label: 'Policies', path: '/policies' },
   { icon: ScrollText, label: 'Access Events', path: '/access' },
   { icon: ClipboardCheck, label: 'Compliance', path: '/compliance' },
+  { icon: Settings, label: 'Settings', path: '/settings' },
 ];
 
 const ONBOARDING_NAV_ITEMS = [
   { icon: Plug, label: 'Connectors', path: '/connectors' },
+  { icon: Settings, label: 'Settings', path: '/settings' },
 ];
 
 const Sidebar = ({ isCollapsed, onToggleCollapse }) => {
   const location = useLocation();
   const navigate = useNavigate();
-  const { user, logout } = useAuth();
+  const { user, tenant, logout } = useAuth();
   const { hasConnectors } = useOnboarding();
 
   const NAV_ITEMS = hasConnectors ? ALL_NAV_ITEMS : ONBOARDING_NAV_ITEMS;
@@ -79,7 +82,7 @@ const Sidebar = ({ isCollapsed, onToggleCollapse }) => {
             Workload Identity
           </div>
           <div className="text-[10px] font-medium text-nhi-faint uppercase tracking-[0.06em]">
-            Management
+            Defense
           </div>
         </div>
       </div>
@@ -177,7 +180,7 @@ const Sidebar = ({ isCollapsed, onToggleCollapse }) => {
             {!isCollapsed && (
               <div className="flex-1 min-w-0">
                 <div className="text-[12px] font-medium text-nhi-text truncate">{user.name}</div>
-                <div className="text-[10px] text-nhi-ghost truncate">{user.email}</div>
+                <div className="text-[10px] text-nhi-ghost truncate">{tenant?.name || user.email}</div>
               </div>
             )}
             {!isCollapsed && (

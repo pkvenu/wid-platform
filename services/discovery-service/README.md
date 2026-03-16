@@ -1,6 +1,6 @@
 # Discovery Service
 
-Auto-discovery service for Workload Identity Platform. Automatically discovers Kubernetes workloads and Docker containers, assigns SPIFFE IDs, and stores them in the database.
+Auto-discovery service for Workload Identity Defense (WID) Platform. Automatically discovers Kubernetes workloads and Docker containers, assigns SPIFFE IDs, and stores them in the database.
 
 ## Features
 
