@@ -262,7 +262,7 @@ export default function AIInventory() {
           {CARD_CONFIG.map(cfg => {
             const Icon = cfg.icon;
             const data = inventory?.[cfg.key];
-            const count = data?.count ?? 0;
+            const count = data?.total ?? data?.count ?? 0;
             const breakdown = data?.breakdown || {};
             const isExpanded = expandedCard === cfg.key;
 
