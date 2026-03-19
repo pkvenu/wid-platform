@@ -475,6 +475,49 @@ class ProtocolScanner {
       }
     }
 
+    // 9 — CVE scanning for detected MCP servers (P1.3)
+    let cveMap = new Map();
+    try {
+      const { CVEScanner } = require('./cve-scanner');
+      const cveScanner = new CVEScanner({ cacheTTL: 6 * 60 * 60 * 1000 });
+      cveMap = await cveScanner.scanMCPServers(workloads);
+
+      // Generate mcp-known-cve findings for each workload with CVEs
+      for (const [workloadId, cves] of cveMap) {
+        const w = workloads.find(w => (w.id || w.name) === workloadId);
+        if (!w || cves.length === 0) continue;
+
+        const criticalCVEs = cves.filter(c => c.severity === 'critical');
+        const highCVEs = cves.filter(c => c.severity === 'high');
+        const maxCVSS = Math.max(...cves.map(c => c.cvss_score || 0));
+        const cveIds = cves.map(c => c.cve_id);
+        const fixable = cves.filter(c => c.fix_version);
+
+        this.findings.push({
+          type: 'mcp-known-cve',
+          severity: criticalCVEs.length > 0 ? 'critical' : (highCVEs.length > 0 ? 'high' : 'medium'),
+          workload: w.name,
+          title: `Known CVEs in MCP Server: ${w.name}`,
+          message: `MCP server "${w.name}" has ${cves.length} known CVE(s) (${criticalCVEs.length} critical, ${highCVEs.length} high). Max CVSS: ${maxCVSS}. CVEs: ${cveIds.slice(0, 5).join(', ')}${cveIds.length > 5 ? ` (+${cveIds.length - 5} more)` : ''}. ${fixable.length} have fix versions available.`,
+          owasp: 'NHI8',
+          cve_count: cves.length,
+          critical_count: criticalCVEs.length,
+          high_count: highCVEs.length,
+          max_cvss: maxCVSS,
+          cve_ids: cveIds,
+          fixable_count: fixable.length,
+          cves: cves.slice(0, 10), // Include top 10 CVE details
+          recommendation: fixable.length > 0
+            ? `Update affected packages: ${fixable.slice(0, 3).map(c => `${c.package_name} to ${c.fix_version}`).join(', ')}.`
+            : 'No fix versions available. Consider switching to an alternative package or applying compensating controls.',
+        });
+
+        this.log(`CVE findings for ${w.name}: ${cves.length} CVEs (${criticalCVEs.length} critical)`, criticalCVEs.length > 0 ? 'error' : 'warn');
+      }
+    } catch (err) {
+      this.log(`CVE scanning skipped: ${err.message}`, 'warn');
+    }
+
     this.log(`Done: ${this.nodes.length} nodes, ${this.relationships.length} edges, ${this.findings.length} findings, ${Object.keys(aiEnrichments).length} AI profiles`, 'success');
 
     return {
@@ -482,6 +525,7 @@ class ProtocolScanner {
       relationships: this.relationships,
       findings: this.findings,
       aiEnrichments,
+      cveMap,
     };
   }
 

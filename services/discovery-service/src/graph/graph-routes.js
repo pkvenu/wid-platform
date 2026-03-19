@@ -17,6 +17,43 @@ const { calculateSecurityScore, determineTrustLevel, applyFindingPenalties } = r
 const { detectCategory } = require('./categorizer');
 const { RemediationRenderer } = require('./remediation-renderer');
 const { RemediationExecutor } = require('./remediation-executor');
+const { CVEScanner } = require('./cve-scanner');
+
+// Singleton CVE scanner instance (shared across requests, 6h cache)
+const cveScanner = new CVEScanner({ cacheTTL: 6 * 60 * 60 * 1000 });
+
+// =============================================================================
+// MITRE ATLAS Mapping — Maps WID finding types to ATLAS techniques
+// =============================================================================
+const MITRE_ATLAS_MAPPING = {
+  // Reconnaissance
+  'shadow-ai-usage': { technique: 'AML.T0002', tactic: 'Reconnaissance', name: 'Active Scanning' },
+  'unregistered-ai-endpoint': { technique: 'AML.T0014', tactic: 'Reconnaissance', name: 'Discover ML Model' },
+
+  // ML Supply Chain
+  'mcp-tool-poisoning': { technique: 'AML.T0010', tactic: 'Initial Access', name: 'ML Supply Chain Compromise' },
+  'mcp-capability-drift': { technique: 'AML.T0010.001', tactic: 'Initial Access', name: 'Poison Training Data' },
+  'mcp-unverified-server': { technique: 'AML.T0010.002', tactic: 'Initial Access', name: 'Poison Model' },
+  'mcp-known-cve': { technique: 'AML.T0010', tactic: 'Initial Access', name: 'ML Supply Chain Compromise' },
+
+  // Persistence
+  'a2a-no-auth': { technique: 'AML.T0043', tactic: 'Persistence', name: 'Establish Accounts' },
+  'a2a-invalid-signature': { technique: 'AML.T0043.001', tactic: 'Persistence', name: 'Establish Accounts - Compromise' },
+
+  // Privilege Escalation
+  'over-privileged': { technique: 'AML.T0012', tactic: 'Privilege Escalation', name: 'Exploit Public-Facing Application' },
+  'shared-sa': { technique: 'AML.T0012.001', tactic: 'Privilege Escalation', name: 'Valid Accounts' },
+  'cross-account-trust': { technique: 'AML.T0012.002', tactic: 'Privilege Escalation', name: 'Cloud Accounts' },
+
+  // Exfiltration / Collection
+  'leaked-credentials': { technique: 'AML.T0025', tactic: 'Exfiltration', name: 'Exfiltration via Cyber Means' },
+  'static-external-credential': { technique: 'AML.T0024', tactic: 'Exfiltration', name: 'Exfiltration via ML Inference API' },
+  'toxic-combo': { technique: 'AML.T0040', tactic: 'Collection', name: 'ML Model Inference API Access' },
+
+  // Impact
+  'public-ai-endpoint': { technique: 'AML.T0029', tactic: 'Impact', name: 'Denial of ML Service' },
+  'internet-to-data-path': { technique: 'AML.T0034', tactic: 'Impact', name: 'Cost Harvesting' },
+};
 
 // Tenant-scoped in-memory cache (rebuilt on each scan)
 const graphCaches = new Map(); // tenantId → { data, scanTime }
@@ -167,6 +204,17 @@ function mountGraphRoutes(app, pool) {
             enforced_paths: enforcedPaths.length,
             unmitigated_paths: graphResult.attack_paths.length - remediatedPaths.length,
           };
+
+          // ── MITRE ATLAS enrichment on attack paths ──
+          for (const ap of graphResult.attack_paths) {
+            const ft = ap.finding_type || ap.type;
+            const atlasEntry = ft ? MITRE_ATLAS_MAPPING[ft] : null;
+            if (atlasEntry) {
+              ap.atlas_technique = atlasEntry.technique;
+              ap.atlas_tactic = atlasEntry.tactic;
+              ap.atlas_name = atlasEntry.name;
+            }
+          }
         }
       } catch (e) {
         console.error('Attack path enrichment error:', e.message);
@@ -888,6 +936,224 @@ function mountGraphRoutes(app, pool) {
         return res.json({ workload: req.params.workloadName, total: 0, drift_events: [], note: 'mcp_fingerprints table not yet created' });
       }
       res.status(500).json({ error: e.message });
+    }
+  });
+
+  // ═══════════════════════════════════════════════════════════════════════════
+  // CVE Scanning Endpoints (P1.3)
+  // ═══════════════════════════════════════════════════════════════════════════
+
+  // GET /api/v1/graph/cves — All CVE findings (from DB + in-memory cache)
+  app.get('/api/v1/graph/cves', async (req, res) => {
+    try {
+      const { severity, ecosystem, limit: rawLimit, offset: rawOffset } = req.query;
+      const conditions = [];
+      const params = [];
+      let pi = 1;
+
+      if (severity) { conditions.push(`severity = $${pi}`); params.push(severity); pi++; }
+      if (ecosystem) { conditions.push(`ecosystem = $${pi}`); params.push(ecosystem); pi++; }
+
+      const where = conditions.length > 0 ? `WHERE ${conditions.join(' AND ')}` : '';
+      const limit = Math.min(parseInt(rawLimit) || 200, 1000);
+      const offset = parseInt(rawOffset) || 0;
+
+      let dbResults = [];
+      let dbTotal = 0;
+      try {
+        const countRes = await db(req).query(`SELECT COUNT(*) FROM cve_findings ${where}`, params);
+        dbTotal = parseInt(countRes.rows[0].count);
+        const dataParams = [...params, limit, offset];
+        const dataRes = await db(req).query(
+          `SELECT cf.*, w.name as workload_name
+           FROM cve_findings cf
+           LEFT JOIN workloads w ON cf.workload_id = w.id
+           ${where}
+           ORDER BY cf.cvss_score DESC NULLS LAST, cf.scanned_at DESC
+           LIMIT $${pi} OFFSET $${pi + 1}`,
+          dataParams
+        );
+        dbResults = dataRes.rows;
+      } catch (e) {
+        if (!e.message?.includes('does not exist')) throw e;
+        // Table not created yet — return from graph cache only
+      }
+
+      // Also collect CVE findings from current graph cache
+      const tenantId = req.tenantId || '_system';
+      const { data: cachedGraph } = getGraphCache(tenantId);
+      const graphCVEFindings = [];
+      if (cachedGraph?.findings) {
+        for (const f of cachedGraph.findings) {
+          if (f.type === 'mcp-known-cve') {
+            graphCVEFindings.push(f);
+          }
+        }
+      }
+
+      res.json({
+        total: dbTotal,
+        cves: dbResults,
+        graph_cve_findings: graphCVEFindings.length,
+        scanner_stats: cveScanner.getStats(),
+      });
+    } catch (error) {
+      res.status(500).json({ error: error.message });
+    }
+  });
+
+  // GET /api/v1/graph/cves/:workloadName — CVEs for a specific MCP server
+  app.get('/api/v1/graph/cves/:workloadName', async (req, res) => {
+    try {
+      const workloadName = req.params.workloadName;
+      let dbResults = [];
+
+      try {
+        const dataRes = await db(req).query(
+          `SELECT cf.*, w.name as workload_name
+           FROM cve_findings cf
+           LEFT JOIN workloads w ON cf.workload_id = w.id
+           WHERE w.name = $1 OR cf.package_name = $1
+           ORDER BY cf.cvss_score DESC NULLS LAST, cf.scanned_at DESC
+           LIMIT 200`,
+          [workloadName]
+        );
+        dbResults = dataRes.rows;
+      } catch (e) {
+        if (!e.message?.includes('does not exist')) throw e;
+      }
+
+      // Also check graph cache for in-memory CVE findings for this workload
+      const tenantId = req.tenantId || '_system';
+      const { data: cachedGraph } = getGraphCache(tenantId);
+      const graphCVEFindings = [];
+      if (cachedGraph?.findings) {
+        for (const f of cachedGraph.findings) {
+          if (f.type === 'mcp-known-cve' && f.workload === workloadName) {
+            graphCVEFindings.push(f);
+          }
+        }
+      }
+
+      res.json({
+        workload: workloadName,
+        total: dbResults.length,
+        cves: dbResults,
+        graph_cve_findings: graphCVEFindings,
+      });
+    } catch (error) {
+      res.status(500).json({ error: error.message });
+    }
+  });
+
+  // GET /api/v1/graph/cves/scan/:packageName — On-demand CVE scan for a package
+  app.get('/api/v1/graph/cves/scan/:packageName', async (req, res) => {
+    try {
+      const { packageName } = req.params;
+      const { version, ecosystem } = req.query;
+      const result = await cveScanner.scanPackage(
+        decodeURIComponent(packageName),
+        version || null,
+        ecosystem || 'npm'
+      );
+      res.json(result);
+    } catch (error) {
+      res.status(500).json({ error: error.message });
+    }
+  });
+
+  // ═══════════════════════════════════════════════════════════════════════════
+  // MITRE ATLAS Coverage Endpoint (P1.1)
+  // ═══════════════════════════════════════════════════════════════════════════
+
+  // GET /api/v1/graph/atlas-coverage — ATLAS technique coverage from active findings
+  app.get('/api/v1/graph/atlas-coverage', async (req, res) => {
+    try {
+      // Get current graph to count active findings
+      const tenantId = req.tenantId || '_system';
+      const { data: cachedGraph } = getGraphCache(tenantId);
+      let graphResult = cachedGraph;
+      if (!graphResult) {
+        graphResult = await buildGraph(pool);
+      }
+
+      const findings = graphResult?.findings || [];
+      const attackPaths = graphResult?.attack_paths || [];
+
+      // Count active findings per finding type
+      const findingCounts = {};
+      for (const f of findings) {
+        const ft = f.type || f.finding_type;
+        if (ft) findingCounts[ft] = (findingCounts[ft] || 0) + 1;
+      }
+      for (const ap of attackPaths) {
+        const ft = ap.finding_type || ap.type;
+        if (ft) findingCounts[ft] = (findingCounts[ft] || 0) + 1;
+      }
+
+      // Build tactic-level aggregation
+      const tacticMap = new Map(); // tactic name → { techniques: Set, active_findings: number }
+      let totalMapped = 0;
+      let totalActiveWithAtlas = 0;
+
+      // Collect all unique techniques per tactic
+      for (const [findingType, atlas] of Object.entries(MITRE_ATLAS_MAPPING)) {
+        if (!tacticMap.has(atlas.tactic)) {
+          tacticMap.set(atlas.tactic, { techniques: new Set(), covered: new Set(), active_findings: 0 });
+        }
+        const entry = tacticMap.get(atlas.tactic);
+        entry.techniques.add(atlas.technique);
+
+        const count = findingCounts[findingType] || 0;
+        if (count > 0) {
+          entry.covered.add(atlas.technique);
+          entry.active_findings += count;
+          totalActiveWithAtlas += count;
+        }
+      }
+
+      // ATLAS tactic IDs (approximate — for display purposes)
+      const TACTIC_IDS = {
+        'Reconnaissance': 'TA0043',
+        'Initial Access': 'TA0001',
+        'Persistence': 'TA0003',
+        'Privilege Escalation': 'TA0004',
+        'Collection': 'TA0009',
+        'Exfiltration': 'TA0010',
+        'Impact': 'TA0040',
+      };
+
+      const tactics = [];
+      for (const [name, data] of tacticMap) {
+        tactics.push({
+          id: TACTIC_IDS[name] || name,
+          name,
+          techniques: data.techniques.size,
+          covered: data.covered.size,
+          active_findings: data.active_findings,
+        });
+        totalMapped += data.techniques.size;
+      }
+
+      // Sort tactics by active findings (most active first)
+      tactics.sort((a, b) => b.active_findings - a.active_findings);
+
+      const totalTechniques = new Set(Object.values(MITRE_ATLAS_MAPPING).map(m => m.technique)).size;
+      const coveredTechniques = new Set();
+      for (const [ft, atlas] of Object.entries(MITRE_ATLAS_MAPPING)) {
+        if (findingCounts[ft] > 0) coveredTechniques.add(atlas.technique);
+      }
+
+      res.json({
+        tactics,
+        total_techniques_mapped: totalTechniques,
+        total_active_findings_with_atlas: totalActiveWithAtlas,
+        coverage_pct: totalTechniques > 0 ? Math.round((coveredTechniques.size / totalTechniques) * 100) : 0,
+        mapping_version: '1.0.0',
+        atlas_version: 'ATLAS v4.0',
+      });
+    } catch (error) {
+      res.status(500).json({ error: error.message });
     }
   });
 }
@@ -3145,6 +3411,7 @@ const FINDING_TYPE_DEFAULTS = {
   'public-ai-endpoint': { label: 'Public AI Endpoint', description: 'AI inference endpoint publicly accessible. Restrict to VPC-only and enforce authentication.', severity: 'critical', category: 'network' },
   'mcp-capability-drift': { label: 'MCP Capability Drift', description: 'MCP server capabilities changed since last scan — tools added, removed, or descriptions modified. Investigate for supply-chain tampering.', severity: 'high', category: 'supply-chain' },
   'a2a-invalid-signature': { label: 'A2A Invalid Signature', description: 'A2A Agent Card has an invalid cryptographic signature. Card may have been tampered with. Investigate immediately.', severity: 'high', category: 'access' },
+  'mcp-known-cve': { label: 'MCP Known CVE', description: 'MCP server package has known CVE vulnerabilities. Update to patched version immediately. Supply-chain risk.', severity: 'critical', category: 'supply-chain' },
 };
 
 // =============================================================================
@@ -3534,4 +3801,4 @@ async function seedProviderRegistry(dbClient) {
   await ProviderRegistry.initialize(dbClient);
 }
 
-module.exports = { mountGraphRoutes, refreshGraph, buildGraph, clearGraphCache, generateBaselinePolicies, seedRemediationIntents, seedFindingTypeMetadata, seedProviderRegistry, scoreControlsAsync, FINDING_TYPE_DEFAULTS };
+module.exports = { mountGraphRoutes, refreshGraph, buildGraph, clearGraphCache, generateBaselinePolicies, seedRemediationIntents, seedFindingTypeMetadata, seedProviderRegistry, scoreControlsAsync, FINDING_TYPE_DEFAULTS, MITRE_ATLAS_MAPPING, cveScanner };

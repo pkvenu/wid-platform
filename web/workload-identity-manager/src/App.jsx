@@ -18,6 +18,7 @@ import DemoFlow from './pages/DemoFlow';
 import Connectors from './pages/Connectors';
 import Compliance from './pages/Compliance';
 import TenantSettings from './pages/TenantSettings';
+import AIInventory from './pages/AIInventory';
 
 function App() {
   return (
@@ -58,6 +59,7 @@ function App() {
               <Route path="operations" element={<Operations />} />
               <Route path="demo" element={<DemoFlow />} />
               <Route path="settings" element={<TenantSettings />} />
+              <Route path="ai-inventory" element={<AIInventory />} />
             </Route>
           </Route>
         </Route>

@@ -1911,6 +1911,113 @@ app.get('/api/v1/stats', async (req, res) => {
   }
 });
 
+// Get AI Inventory — P0.1
+app.get('/api/v1/ai-inventory', async (req, res) => {
+  try {
+    // Agent counts: total AI agents and breakdown by type (a2a vs custom)
+    const agentStats = await pool.query(`
+      SELECT
+        COUNT(*) FILTER (WHERE is_ai_agent = true) AS total,
+        COUNT(*) FILTER (WHERE is_ai_agent = true AND category = 'a2a-agent') AS a2a,
+        COUNT(*) FILTER (WHERE is_ai_agent = true AND category != 'a2a-agent') AS custom
+      FROM workloads
+    `);
+
+    // MCP server counts: verified vs unverified
+    const mcpStats = await pool.query(`
+      SELECT
+        COUNT(*) AS total,
+        COUNT(*) FILTER (WHERE verified = true) AS verified,
+        COUNT(*) FILTER (WHERE verified = false) AS unverified
+      FROM workloads WHERE is_mcp_server = true
+    `);
+
+    // Distinct tools from MCP tool events, with top tools by agent count
+    const toolStats = await pool.query(`
+      SELECT COUNT(DISTINCT tool_name) AS total FROM mcp_tool_events WHERE tool_name IS NOT NULL
+    `);
+    const topTools = await pool.query(`
+      SELECT tool_name AS name, COUNT(DISTINCT source_name) AS agent_count
+      FROM mcp_tool_events WHERE tool_name IS NOT NULL
+      GROUP BY tool_name ORDER BY agent_count DESC LIMIT 10
+    `);
+
+    // Models from workload metadata AI enrichment
+    const modelStats = await pool.query(`
+      SELECT
+        COUNT(DISTINCT metadata->'ai'->>'model') FILTER (WHERE metadata->'ai'->>'model' IS NOT NULL) AS total,
+        COUNT(DISTINCT metadata->'ai'->>'model') FILTER (WHERE metadata->'ai'->>'model' IS NOT NULL AND metadata->'ai'->>'model_type' = 'foundation') AS foundation,
+        COUNT(DISTINCT metadata->'ai'->>'model') FILTER (WHERE metadata->'ai'->>'model' IS NOT NULL AND (metadata->'ai'->>'model_type' IS NULL OR metadata->'ai'->>'model_type' != 'foundation')) AS custom
+      FROM workloads WHERE is_ai_agent = true
+    `);
+
+    // Data sources from targets table
+    const dsStats = await pool.query(`
+      SELECT
+        COUNT(*) AS total,
+        COUNT(*) FILTER (WHERE type = 'database') AS databases,
+        COUNT(*) FILTER (WHERE type = 'external-api') AS apis,
+        COUNT(*) FILTER (WHERE type IN ('storage', 's3', 'gcs', 'blob')) AS storage
+      FROM targets
+    `);
+
+    // Issues from graph cache attack paths
+    const issueStats = await pool.query(`
+      SELECT
+        COUNT(*) AS total_issues,
+        COUNT(*) FILTER (WHERE severity = 'critical') AS critical_issues,
+        COUNT(*) FILTER (WHERE severity = 'high') AS high_issues
+      FROM policy_violations WHERE status = 'open'
+    `);
+
+    // Last scan timestamp
+    const lastScan = await pool.query(`
+      SELECT MAX(started_at) AS last_scan FROM discovery_scans
+    `);
+
+    const agents = agentStats.rows[0];
+    const mcp = mcpStats.rows[0];
+    const tools = toolStats.rows[0];
+    const models = modelStats.rows[0];
+    const ds = dsStats.rows[0];
+    const issues = issueStats.rows[0];
+
+    res.json({
+      agents: {
+        total: parseInt(agents.total) || 0,
+        breakdown: { a2a: parseInt(agents.a2a) || 0, custom: parseInt(agents.custom) || 0 }
+      },
+      mcp_servers: {
+        total: parseInt(mcp.total) || 0,
+        breakdown: { verified: parseInt(mcp.verified) || 0, unverified: parseInt(mcp.unverified) || 0 }
+      },
+      tools: {
+        total: parseInt(tools.total) || 0,
+        top: topTools.rows.map(r => ({ name: r.name, agent_count: parseInt(r.agent_count) || 0 }))
+      },
+      models: {
+        total: parseInt(models.total) || 0,
+        breakdown: { foundation: parseInt(models.foundation) || 0, custom: parseInt(models.custom) || 0 }
+      },
+      data_sources: {
+        total: parseInt(ds.total) || 0,
+        breakdown: {
+          databases: parseInt(ds.databases) || 0,
+          apis: parseInt(ds.apis) || 0,
+          storage: parseInt(ds.storage) || 0
+        }
+      },
+      total_issues: parseInt(issues.total_issues) || 0,
+      critical_issues: parseInt(issues.critical_issues) || 0,
+      high_issues: parseInt(issues.high_issues) || 0,
+      last_scan: lastScan.rows[0]?.last_scan || null
+    });
+  } catch (error) {
+    console.error('AI inventory error:', error.message);
+    res.status(500).json({ error: error.message });
+  }
+});
+
 // =============================================================================
 // Startup
 // =============================================================================
@@ -1985,6 +2092,7 @@ async function start() {
       console.log('  GET  /api/v1/workloads/:id        → Get workload');
       console.log('  POST /api/v1/workloads/:id/verify → Verify workload');
       console.log('  GET  /api/v1/stats                → Get statistics');
+      console.log('  GET  /api/v1/ai-inventory         → AI asset inventory');
       console.log('  GET  /api/v1/connectors           → List connectors');
       console.log('  POST /api/v1/connectors           → Create connector');
       console.log('  POST /api/v1/connectors/:id/test  → Test credentials');

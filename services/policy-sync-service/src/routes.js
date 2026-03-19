@@ -1415,6 +1415,96 @@ function mountPolicyRoutes(app, pool, opts = {}) {
   });
 
   // ══════════════════════════════════════════════
+  // Per-Agent Violation Aggregation — P0.2
+  // ══════════════════════════════════════════════
+
+  app.get('/api/v1/violations/by-agent', async (req, res) => {
+    try {
+      const days = Math.min(parseInt(req.query.days) || 7, 90);
+      const limit = Math.min(parseInt(req.query.limit) || 100, 500);
+
+      // Aggregate policy violations by workload within the time window
+      const violationR = await db(req).query(`
+        SELECT
+          v.workload_id,
+          v.workload_name,
+          w.is_ai_agent,
+          COUNT(*) AS total_violations,
+          COUNT(*) FILTER (WHERE v.violation_type = 'over_privileged') AS over_privileged,
+          COUNT(*) FILTER (WHERE v.violation_type = 'shared_sa') AS shared_sa,
+          COUNT(*) FILTER (WHERE v.violation_type IN ('mcp_drift', 'mcp_unverified', 'mcp_tool_abuse')) AS mcp_issues,
+          COUNT(*) FILTER (WHERE v.violation_type = 'sensitive_data') AS sensitive_data,
+          COUNT(*) FILTER (WHERE v.severity = 'critical') AS sev_critical,
+          COUNT(*) FILTER (WHERE v.severity = 'high') AS sev_high,
+          COUNT(*) FILTER (WHERE v.severity = 'medium') AS sev_medium
+        FROM policy_violations v
+        LEFT JOIN workloads w ON w.id = v.workload_id
+        WHERE v.created_at > NOW() - MAKE_INTERVAL(days => $1)
+          AND v.status = 'open'
+        GROUP BY v.workload_id, v.workload_name, w.is_ai_agent
+        ORDER BY total_violations DESC
+        LIMIT $2
+      `, [days, limit]);
+
+      // Runtime denials from ext_authz_decisions in same window
+      const denialR = await db(req).query(`
+        SELECT source_name, COUNT(*) AS denial_count
+        FROM ext_authz_decisions
+        WHERE verdict IN ('denied', 'deny')
+          AND created_at > NOW() - MAKE_INTERVAL(days => $1)
+        GROUP BY source_name
+      `, [days]);
+
+      // Total interactions per source for ratio calculation
+      const interactionR = await db(req).query(`
+        SELECT source_name, COUNT(*) AS interaction_count
+        FROM ext_authz_decisions
+        WHERE created_at > NOW() - MAKE_INTERVAL(days => $1)
+        GROUP BY source_name
+      `, [days]);
+
+      // Build lookup maps
+      const denialMap = {};
+      for (const r of denialR.rows) { denialMap[r.source_name] = parseInt(r.denial_count) || 0; }
+      const interactionMap = {};
+      for (const r of interactionR.rows) { interactionMap[r.source_name] = parseInt(r.interaction_count) || 0; }
+
+      const agents = violationR.rows.map(row => {
+        const policyDenials = denialMap[row.workload_name] || 0;
+        const totalViolations = (parseInt(row.total_violations) || 0) + policyDenials;
+        return {
+          workload_name: row.workload_name,
+          workload_id: row.workload_id,
+          is_ai_agent: row.is_ai_agent || false,
+          total_violations: totalViolations,
+          total_interactions: interactionMap[row.workload_name] || 0,
+          breakdown: {
+            over_privileged: parseInt(row.over_privileged) || 0,
+            shared_sa: parseInt(row.shared_sa) || 0,
+            mcp_issues: parseInt(row.mcp_issues) || 0,
+            policy_denials: policyDenials,
+            sensitive_data: parseInt(row.sensitive_data) || 0
+          },
+          severity: {
+            critical: parseInt(row.sev_critical) || 0,
+            high: parseInt(row.sev_high) || 0,
+            medium: parseInt(row.sev_medium) || 0
+          }
+        };
+      });
+
+      res.json({
+        agents,
+        period_days: days,
+        total_agents_with_violations: agents.length
+      });
+    } catch (e) {
+      console.error('Violations by-agent error:', e.message);
+      res.status(500).json({ error: e.message });
+    }
+  });
+
+  // ══════════════════════════════════════════════
   // Enforcement Summary — proof that policies are working
   // ══════════════════════════════════════════════
   app.get('/api/v1/enforcement/summary', async (req, res) => {

@@ -12,6 +12,7 @@ import {
   PanelLeftOpen,
   ClipboardCheck,
   Settings,
+  BrainCircuit,
 } from 'lucide-react';
 import { useAuth } from '../../context/AuthContext';
 import { useOnboarding } from '../../context/OnboardingContext';
@@ -19,6 +20,7 @@ import { useOnboarding } from '../../context/OnboardingContext';
 const ALL_NAV_ITEMS = [
   { icon: Server, label: 'Workloads', path: '/workloads', badge: true },
   { icon: GitBranch, label: 'Identity Graph', path: '/graph' },
+  { icon: BrainCircuit, label: 'AI Inventory', path: '/ai-inventory' },
   { icon: Plug, label: 'Connectors', path: '/connectors' },
   { icon: Shield, label: 'Policies', path: '/policies' },
   { icon: ScrollText, label: 'Access Events', path: '/access' },

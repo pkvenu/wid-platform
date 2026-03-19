@@ -379,6 +379,7 @@ CREATE INDEX IF NOT EXISTS idx_violations_policy ON policy_violations(policy_id)
 CREATE INDEX IF NOT EXISTS idx_violations_workload ON policy_violations(workload_id);
 CREATE INDEX IF NOT EXISTS idx_violations_status ON policy_violations(status);
 CREATE INDEX IF NOT EXISTS idx_violations_created ON policy_violations(created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_violations_agent_created ON policy_violations(workload_id, created_at DESC) WHERE status = 'open';
 
 
 -- ═══════════════════════════════════════════════════════════════════════════════
@@ -1565,6 +1566,30 @@ EXCEPTION WHEN OTHERS THEN
   RETURN '[encrypted - wrong key]';
 END;
 $$ LANGUAGE plpgsql IMMUTABLE;
+
+
+-- ═══════════════════════════════════════════════════════════════════════════════
+-- CVE Findings — Vulnerability scan results for MCP servers (P1.3)
+-- ═══════════════════════════════════════════════════════════════════════════════
+CREATE TABLE IF NOT EXISTS cve_findings (
+  id SERIAL PRIMARY KEY,
+  tenant_id UUID NOT NULL DEFAULT '00000000-0000-0000-0000-000000000001',
+  workload_id UUID,
+  package_name VARCHAR(255) NOT NULL,
+  package_version VARCHAR(100),
+  ecosystem VARCHAR(50) DEFAULT 'npm',
+  cve_id VARCHAR(30) NOT NULL,
+  cvss_score NUMERIC(3,1),
+  severity VARCHAR(20),
+  summary TEXT,
+  fix_version VARCHAR(100),
+  affected_range TEXT,
+  published_at TIMESTAMPTZ,
+  scanned_at TIMESTAMPTZ DEFAULT NOW()
+);
+CREATE INDEX IF NOT EXISTS idx_cve_workload ON cve_findings(workload_id);
+CREATE INDEX IF NOT EXISTS idx_cve_severity ON cve_findings(severity);
+CREATE INDEX IF NOT EXISTS idx_cve_tenant ON cve_findings(tenant_id);
 
 
 COMMIT;
