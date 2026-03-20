@@ -2018,14 +2018,55 @@ app.get('/api/v1/ai-inventory', async (req, res) => {
     dataSourcesFromGraph.apis = Math.max(dataSourcesFromGraph.apis, parseInt(tgt.apis) || 0);
     dataSourcesFromGraph.storage = Math.max(dataSourcesFromGraph.storage, parseInt(tgt.storage) || 0);
 
-    // Issues from graph cache attack paths
-    const issueStats = await pool.query(`
-      SELECT
-        COUNT(*) AS total_issues,
-        COUNT(*) FILTER (WHERE severity = 'critical') AS critical_issues,
-        COUNT(*) FILTER (WHERE severity = 'high') AS high_issues
-      FROM policy_violations WHERE status = 'open'
-    `);
+    // Issues from graph cache attack paths (NOT policy_violations which may be empty)
+    let issuesData = { total: 0, by_severity: [], top: [] };
+    let recentThreats = [];
+    try {
+      const { data: issueGraph } = getGraphCache() || {};
+      if (issueGraph?.attack_paths) {
+        const paths = issueGraph.attack_paths;
+        const critCount = paths.filter(p => p.severity === 'critical').length;
+        const highCount = paths.filter(p => p.severity === 'high').length;
+        const medCount = paths.filter(p => p.severity === 'medium').length;
+        issuesData = {
+          total: paths.length,
+          by_severity: [
+            ...(critCount ? [{ severity: 'critical', count: critCount }] : []),
+            ...(highCount ? [{ severity: 'high', count: highCount }] : []),
+            ...(medCount ? [{ severity: 'medium', count: medCount }] : []),
+          ],
+          top: paths
+            .sort((a, b) => ({ critical: 3, high: 2, medium: 1 }[b.severity] || 0) - ({ critical: 3, high: 2, medium: 1 }[a.severity] || 0))
+            .slice(0, 5)
+            .map(p => ({
+              id: p.id,
+              title: p.title,
+              description: p.description,
+              severity: p.severity,
+              finding_type: p.finding_type,
+              workload: p.workload,
+              attack_path: {
+                source: p.workload || 'unknown',
+                impacted: p.blast_radius || p.nodes?.length || 0,
+              },
+            })),
+        };
+
+        // Recent threats: AI-relevant attack paths as "threat detections"
+        const aiFindings = paths.filter(p =>
+          ['mcp-tool-poisoning', 'mcp-capability-drift', 'mcp-unverified-server', 'mcp-known-cve',
+           'a2a-no-auth', 'a2a-invalid-signature', 'shadow-ai-usage', 'unregistered-ai-endpoint',
+           'public-ai-endpoint', 'over-privileged'].includes(p.finding_type)
+        );
+        recentThreats = aiFindings.slice(0, 5).map(p => ({
+          id: p.id,
+          title: `${p.finding_type.replace(/-/g, ' ').replace(/\b\w/g, c => c.toUpperCase())}: ${p.workload || 'Unknown'}`,
+          severity: p.severity,
+          detected_at: issueGraph.generated_at || new Date().toISOString(),
+          category: p.finding_type,
+        }));
+      }
+    } catch (e) { console.log('[ai-inventory] Issues from graph error:', e.message); }
 
     // Last scan timestamp
     const lastScan = await pool.query(`
@@ -2066,9 +2107,11 @@ app.get('/api/v1/ai-inventory', async (req, res) => {
           storage: dataSourcesFromGraph.storage
         }
       },
-      total_issues: parseInt(issues.total_issues) || 0,
-      critical_issues: parseInt(issues.critical_issues) || 0,
-      high_issues: parseInt(issues.high_issues) || 0,
+      issues: issuesData,
+      recent_threats: recentThreats,
+      total_issues: issuesData.total,
+      critical_issues: issuesData.by_severity.find(s => s.severity === 'critical')?.count || 0,
+      high_issues: issuesData.by_severity.find(s => s.severity === 'high')?.count || 0,
       last_scan: lastScan.rows[0]?.last_scan || null
     });
   } catch (error) {

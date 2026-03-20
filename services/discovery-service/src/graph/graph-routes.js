@@ -1144,8 +1144,23 @@ function mountGraphRoutes(app, pool) {
         if (findingCounts[ft] > 0) coveredTechniques.add(atlas.technique);
       }
 
+      // Build matrix for frontend: { tacticId: { techniqueId: { findings, active, name } } }
+      const matrix = {};
+      for (const [findingType, atlas] of Object.entries(MITRE_ATLAS_MAPPING)) {
+        const tacticId = TACTIC_IDS[atlas.tactic] || atlas.tactic;
+        if (!matrix[tacticId]) matrix[tacticId] = {};
+        const count = findingCounts[findingType] || 0;
+        matrix[tacticId][atlas.technique] = {
+          findings: count,
+          active: count > 0,
+          name: atlas.name,
+          finding_type: findingType,
+        };
+      }
+
       res.json({
         tactics,
+        matrix,
         total_techniques_mapped: totalTechniques,
         total_active_findings_with_atlas: totalActiveWithAtlas,
         coverage_pct: totalTechniques > 0 ? Math.round((coveredTechniques.size / totalTechniques) * 100) : 0,
