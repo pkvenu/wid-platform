@@ -1936,7 +1936,9 @@ app.get('/api/v1/ai-inventory', async (req, res) => {
     let toolsFromGraph = [];
     try {
       // Use the in-memory graph cache directly (same cache that serves GET /api/v1/graph)
-      const { data: graphData } = getGraphCache() || {};
+      const tid = req.tenantId || '_system';
+      let { data: graphData } = getGraphCache(tid) || {};
+      if (!graphData) { const sys = getGraphCache('_system') || {}; graphData = sys.data; }
       if (graphData) {
         const mcpNodes = (graphData.nodes || []).filter(n => n.type === 'mcp-server');
         for (const mcp of mcpNodes) {
@@ -1990,7 +1992,9 @@ app.get('/api/v1/ai-inventory', async (req, res) => {
     // ── Data Sources: from in-memory graph cache resource nodes + targets table ──
     let dataSourcesFromGraph = { databases: 0, apis: 0, storage: 0, total: 0 };
     try {
-      const { data: graphData2 } = getGraphCache() || {};
+      const tid2 = req.tenantId || '_system';
+      let { data: graphData2 } = getGraphCache(tid2) || {};
+      if (!graphData2) { const sys2 = getGraphCache('_system') || {}; graphData2 = sys2.data; }
       if (graphData2) {
         const resourceNodes = (graphData2.nodes || []).filter(n =>
           ['resource', 'external-resource', 'external-api', 'credential', 'cloud-sql', 'gcs-bucket'].includes(n.type)
@@ -2022,7 +2026,13 @@ app.get('/api/v1/ai-inventory', async (req, res) => {
     let issuesData = { total: 0, by_severity: [], top: [] };
     let recentThreats = [];
     try {
-      const { data: issueGraph } = getGraphCache() || {};
+      // Try tenant-specific cache first, then system cache
+      const tenantId = req.tenantId || req.query.tenant_id || '_system';
+      let { data: issueGraph } = getGraphCache(tenantId) || {};
+      if (!issueGraph) {
+        const sys = getGraphCache('_system') || {};
+        issueGraph = sys.data;
+      }
       if (issueGraph?.attack_paths) {
         const paths = issueGraph.attack_paths;
         const critCount = paths.filter(p => p.severity === 'critical').length;
