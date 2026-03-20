@@ -1932,34 +1932,92 @@ app.get('/api/v1/ai-inventory', async (req, res) => {
       FROM workloads WHERE is_mcp_server = true
     `);
 
-    // Distinct tools from MCP tool events, with top tools by agent count
-    const toolStats = await pool.query(`
-      SELECT COUNT(DISTINCT tool_name) AS total FROM mcp_tool_events WHERE tool_name IS NOT NULL
-    `);
-    const topTools = await pool.query(`
-      SELECT tool_name AS name, COUNT(DISTINCT source_name) AS agent_count
-      FROM mcp_tool_events WHERE tool_name IS NOT NULL
-      GROUP BY tool_name ORDER BY agent_count DESC LIMIT 10
-    `);
+    // ── Tools: from graph cache MCP server node metadata + mcp_tool_events ──
+    let toolsFromGraph = [];
+    try {
+      const graphCache = await pool.query(`SELECT graph_data FROM identity_graph ORDER BY created_at DESC LIMIT 1`);
+      if (graphCache.rows[0]?.graph_data) {
+        const gd = typeof graphCache.rows[0].graph_data === 'string' ? JSON.parse(graphCache.rows[0].graph_data) : graphCache.rows[0].graph_data;
+        const mcpNodes = (gd.nodes || []).filter(n => n.type === 'mcp-server');
+        for (const mcp of mcpNodes) {
+          const tools = mcp.meta?.tools || [];
+          for (const t of tools) {
+            if (!toolsFromGraph.includes(t)) toolsFromGraph.push(t);
+          }
+        }
+      }
+    } catch { /* graph cache not available */ }
+    // Also check mcp_tool_events for runtime-discovered tools
+    const toolEventsResult = await pool.query(`SELECT DISTINCT tool_name FROM mcp_tool_events WHERE tool_name IS NOT NULL`).catch(() => ({ rows: [] }));
+    for (const r of toolEventsResult.rows) {
+      if (r.tool_name && !toolsFromGraph.includes(r.tool_name)) toolsFromGraph.push(r.tool_name);
+    }
 
-    // Models from workload metadata AI enrichment
-    const modelStats = await pool.query(`
-      SELECT
-        COUNT(DISTINCT metadata->'ai'->>'model') FILTER (WHERE metadata->'ai'->>'model' IS NOT NULL) AS total,
-        COUNT(DISTINCT metadata->'ai'->>'model') FILTER (WHERE metadata->'ai'->>'model' IS NOT NULL AND metadata->'ai'->>'model_type' = 'foundation') AS foundation,
-        COUNT(DISTINCT metadata->'ai'->>'model') FILTER (WHERE metadata->'ai'->>'model' IS NOT NULL AND (metadata->'ai'->>'model_type' IS NULL OR metadata->'ai'->>'model_type' != 'foundation')) AS custom
-      FROM workloads WHERE is_ai_agent = true
-    `);
+    // ── Models: from workload env vars (AI provider detection) + ai_request_events ──
+    const AI_PROVIDER_KEYS = {
+      'OPENAI_API_KEY': { provider: 'OpenAI', model: 'gpt-4o', type: 'foundation' },
+      'ANTHROPIC_API_KEY': { provider: 'Anthropic', model: 'claude-3-sonnet', type: 'foundation' },
+      'GOOGLE_AI_API_KEY': { provider: 'Google AI', model: 'gemini-pro', type: 'foundation' },
+      'AZURE_OPENAI_API_KEY': { provider: 'Azure OpenAI', model: 'gpt-4', type: 'foundation' },
+      'COHERE_API_KEY': { provider: 'Cohere', model: 'command-r', type: 'foundation' },
+      'MISTRAL_API_KEY': { provider: 'Mistral', model: 'mistral-large', type: 'foundation' },
+      'HUGGINGFACE_TOKEN': { provider: 'Hugging Face', model: 'custom', type: 'custom' },
+      'HF_TOKEN': { provider: 'Hugging Face', model: 'custom', type: 'custom' },
+      'REPLICATE_API_TOKEN': { provider: 'Replicate', model: 'custom', type: 'custom' },
+      'GROQ_API_KEY': { provider: 'Groq', model: 'llama-3', type: 'foundation' },
+      'TOGETHER_API_KEY': { provider: 'Together AI', model: 'custom', type: 'custom' },
+      'DEEPSEEK_API_KEY': { provider: 'DeepSeek', model: 'deepseek-v3', type: 'foundation' },
+    };
+    const modelsDetected = new Map(); // provider → { model, type }
+    const agentWorkloads = await pool.query(`SELECT name, metadata FROM workloads WHERE is_ai_agent = true`);
+    for (const w of agentWorkloads.rows) {
+      const env = w.metadata?.env || {};
+      for (const [key, info] of Object.entries(AI_PROVIDER_KEYS)) {
+        if (env[key]) {
+          const modelName = env[key.replace('_API_KEY','_MODEL').replace('_TOKEN','_MODEL')] || info.model;
+          modelsDetected.set(info.provider, { model: modelName, type: info.type });
+        }
+      }
+    }
+    // Also check ai_request_events for runtime-discovered models
+    const aiModelsResult = await pool.query(`SELECT DISTINCT ai_provider, ai_model FROM ai_request_events WHERE ai_provider IS NOT NULL`).catch(() => ({ rows: [] }));
+    for (const r of aiModelsResult.rows) {
+      if (r.ai_provider && !modelsDetected.has(r.ai_provider)) {
+        modelsDetected.set(r.ai_provider, { model: r.ai_model || 'unknown', type: 'foundation' });
+      }
+    }
 
-    // Data sources from targets table
-    const dsStats = await pool.query(`
-      SELECT
-        COUNT(*) AS total,
+    // ── Data Sources: from graph cache resource/credential nodes + targets table ──
+    let dataSourcesFromGraph = { databases: 0, apis: 0, storage: 0, total: 0 };
+    try {
+      const graphCache = await pool.query(`SELECT graph_data FROM identity_graph ORDER BY created_at DESC LIMIT 1`);
+      if (graphCache.rows[0]?.graph_data) {
+        const gd = typeof graphCache.rows[0].graph_data === 'string' ? JSON.parse(graphCache.rows[0].graph_data) : graphCache.rows[0].graph_data;
+        const resourceNodes = (gd.nodes || []).filter(n =>
+          ['resource', 'external-resource', 'external-api', 'credential', 'cloud-sql', 'gcs-bucket'].includes(n.type)
+        );
+        for (const n of resourceNodes) {
+          dataSourcesFromGraph.total++;
+          if (n.type === 'cloud-sql' || n.label?.toLowerCase().includes('sql') || n.label?.toLowerCase().includes('database')) dataSourcesFromGraph.databases++;
+          else if (n.type === 'gcs-bucket' || n.label?.toLowerCase().includes('bucket') || n.label?.toLowerCase().includes('storage')) dataSourcesFromGraph.storage++;
+          else dataSourcesFromGraph.apis++;
+        }
+      }
+    } catch { /* graph cache not available */ }
+    // Also check targets table
+    const targetResult = await pool.query(`
+      SELECT COUNT(*) AS total,
         COUNT(*) FILTER (WHERE type = 'database') AS databases,
         COUNT(*) FILTER (WHERE type = 'external-api') AS apis,
-        COUNT(*) FILTER (WHERE type IN ('storage', 's3', 'gcs', 'blob')) AS storage
+        COUNT(*) FILTER (WHERE type IN ('storage','s3','gcs','blob')) AS storage
       FROM targets
-    `);
+    `).catch(() => ({ rows: [{ total: 0, databases: 0, apis: 0, storage: 0 }] }));
+    const tgt = targetResult.rows[0];
+    // Merge graph + targets (take max)
+    dataSourcesFromGraph.total = Math.max(dataSourcesFromGraph.total, parseInt(tgt.total) || 0);
+    dataSourcesFromGraph.databases = Math.max(dataSourcesFromGraph.databases, parseInt(tgt.databases) || 0);
+    dataSourcesFromGraph.apis = Math.max(dataSourcesFromGraph.apis, parseInt(tgt.apis) || 0);
+    dataSourcesFromGraph.storage = Math.max(dataSourcesFromGraph.storage, parseInt(tgt.storage) || 0);
 
     // Issues from graph cache attack paths
     const issueStats = await pool.query(`
@@ -1977,10 +2035,11 @@ app.get('/api/v1/ai-inventory', async (req, res) => {
 
     const agents = agentStats.rows[0];
     const mcp = mcpStats.rows[0];
-    const tools = toolStats.rows[0];
-    const models = modelStats.rows[0];
-    const ds = dsStats.rows[0];
     const issues = issueStats.rows[0];
+
+    // Build models breakdown
+    const foundationModels = [...modelsDetected.values()].filter(m => m.type === 'foundation');
+    const customModels = [...modelsDetected.values()].filter(m => m.type === 'custom');
 
     res.json({
       agents: {
@@ -1992,19 +2051,20 @@ app.get('/api/v1/ai-inventory', async (req, res) => {
         breakdown: { verified: parseInt(mcp.verified) || 0, unverified: parseInt(mcp.unverified) || 0 }
       },
       tools: {
-        total: parseInt(tools.total) || 0,
-        top: topTools.rows.map(r => ({ name: r.name, agent_count: parseInt(r.agent_count) || 0 }))
+        total: toolsFromGraph.length,
+        top: toolsFromGraph.slice(0, 10).map(name => ({ name, agent_count: 1 }))
       },
       models: {
-        total: parseInt(models.total) || 0,
-        breakdown: { foundation: parseInt(models.foundation) || 0, custom: parseInt(models.custom) || 0 }
+        total: modelsDetected.size,
+        breakdown: { foundation: foundationModels.length, custom: customModels.length },
+        details: [...modelsDetected.entries()].map(([provider, info]) => ({ provider, model: info.model, type: info.type }))
       },
       data_sources: {
-        total: parseInt(ds.total) || 0,
+        total: dataSourcesFromGraph.total,
         breakdown: {
-          databases: parseInt(ds.databases) || 0,
-          apis: parseInt(ds.apis) || 0,
-          storage: parseInt(ds.storage) || 0
+          databases: dataSourcesFromGraph.databases,
+          apis: dataSourcesFromGraph.apis,
+          storage: dataSourcesFromGraph.storage
         }
       },
       total_issues: parseInt(issues.total_issues) || 0,
