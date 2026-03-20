@@ -3801,4 +3801,4 @@ async function seedProviderRegistry(dbClient) {
   await ProviderRegistry.initialize(dbClient);
 }
 
-module.exports = { mountGraphRoutes, refreshGraph, buildGraph, clearGraphCache, generateBaselinePolicies, seedRemediationIntents, seedFindingTypeMetadata, seedProviderRegistry, scoreControlsAsync, FINDING_TYPE_DEFAULTS, MITRE_ATLAS_MAPPING, cveScanner };
+module.exports = { mountGraphRoutes, refreshGraph, buildGraph, clearGraphCache, getGraphCache, generateBaselinePolicies, seedRemediationIntents, seedFindingTypeMetadata, seedProviderRegistry, scoreControlsAsync, FINDING_TYPE_DEFAULTS, MITRE_ATLAS_MAPPING, cveScanner };

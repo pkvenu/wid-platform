@@ -13,7 +13,7 @@ const securityHeaders = require('./shared-loader').securityHeaders;
 const { apiRateLimiter } = require('./shared-loader').rateLimitMiddleware;
 const ScannerRegistry = require('./scanners/base/ScannerRegistry');
 const { mountAttestationRoutes } = require('./attestation/attestation-routes');
-const { mountGraphRoutes, refreshGraph, generateBaselinePolicies } = require('./graph/graph-routes');
+const { mountGraphRoutes, refreshGraph, generateBaselinePolicies, getGraphCache } = require('./graph/graph-routes');
 const { mountConnectorRoutes } = require('./connectors/connector-routes');
 const { mountRegistryRoutes } = require('./graph/registry-routes');
 const app = express();
@@ -1932,13 +1932,13 @@ app.get('/api/v1/ai-inventory', async (req, res) => {
       FROM workloads WHERE is_mcp_server = true
     `);
 
-    // ── Tools: from graph cache MCP server node metadata + mcp_tool_events ──
+    // ── Tools: from in-memory graph cache MCP server node metadata ──
     let toolsFromGraph = [];
     try {
-      const graphCache = await pool.query(`SELECT graph_data FROM identity_graph ORDER BY created_at DESC LIMIT 1`);
-      if (graphCache.rows[0]?.graph_data) {
-        const gd = typeof graphCache.rows[0].graph_data === 'string' ? JSON.parse(graphCache.rows[0].graph_data) : graphCache.rows[0].graph_data;
-        const mcpNodes = (gd.nodes || []).filter(n => n.type === 'mcp-server');
+      // Use the in-memory graph cache directly (same cache that serves GET /api/v1/graph)
+      const { data: graphData } = getGraphCache() || {};
+      if (graphData) {
+        const mcpNodes = (graphData.nodes || []).filter(n => n.type === 'mcp-server');
         for (const mcp of mcpNodes) {
           const tools = mcp.meta?.tools || [];
           for (const t of tools) {
@@ -1946,7 +1946,7 @@ app.get('/api/v1/ai-inventory', async (req, res) => {
           }
         }
       }
-    } catch { /* graph cache not available */ }
+    } catch (e) { console.log('[ai-inventory] Graph tools error:', e.message); }
     // Also check mcp_tool_events for runtime-discovered tools
     const toolEventsResult = await pool.query(`SELECT DISTINCT tool_name FROM mcp_tool_events WHERE tool_name IS NOT NULL`).catch(() => ({ rows: [] }));
     for (const r of toolEventsResult.rows) {
@@ -1987,13 +1987,12 @@ app.get('/api/v1/ai-inventory', async (req, res) => {
       }
     }
 
-    // ── Data Sources: from graph cache resource/credential nodes + targets table ──
+    // ── Data Sources: from in-memory graph cache resource nodes + targets table ──
     let dataSourcesFromGraph = { databases: 0, apis: 0, storage: 0, total: 0 };
     try {
-      const graphCache = await pool.query(`SELECT graph_data FROM identity_graph ORDER BY created_at DESC LIMIT 1`);
-      if (graphCache.rows[0]?.graph_data) {
-        const gd = typeof graphCache.rows[0].graph_data === 'string' ? JSON.parse(graphCache.rows[0].graph_data) : graphCache.rows[0].graph_data;
-        const resourceNodes = (gd.nodes || []).filter(n =>
+      const { data: graphData2 } = getGraphCache() || {};
+      if (graphData2) {
+        const resourceNodes = (graphData2.nodes || []).filter(n =>
           ['resource', 'external-resource', 'external-api', 'credential', 'cloud-sql', 'gcs-bucket'].includes(n.type)
         );
         for (const n of resourceNodes) {
@@ -2003,7 +2002,7 @@ app.get('/api/v1/ai-inventory', async (req, res) => {
           else dataSourcesFromGraph.apis++;
         }
       }
-    } catch { /* graph cache not available */ }
+    } catch (e) { console.log('[ai-inventory] Graph ds error:', e.message); }
     // Also check targets table
     const targetResult = await pool.query(`
       SELECT COUNT(*) AS total,
