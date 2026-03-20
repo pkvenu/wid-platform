@@ -2085,7 +2085,6 @@ app.get('/api/v1/ai-inventory', async (req, res) => {
 
     const agents = agentStats.rows[0];
     const mcp = mcpStats.rows[0];
-    const issues = issueStats.rows[0];
 
     // Build models breakdown
     const foundationModels = [...modelsDetected.values()].filter(m => m.type === 'foundation');
