@@ -1112,15 +1112,20 @@ function mountGraphRoutes(app, pool) {
         }
       }
 
-      // ATLAS tactic IDs (approximate — for display purposes)
+      // MITRE ATLAS tactic IDs (ML.TAxxxx format per ATLAS standard)
       const TACTIC_IDS = {
-        'Reconnaissance': 'TA0043',
-        'Initial Access': 'TA0001',
-        'Persistence': 'TA0003',
-        'Privilege Escalation': 'TA0004',
-        'Collection': 'TA0009',
-        'Exfiltration': 'TA0010',
-        'Impact': 'TA0040',
+        'Reconnaissance': 'ML.TA0001',
+        'Resource Development': 'ML.TA0002',
+        'Initial Access': 'ML.TA0003',
+        'ML Model Access': 'ML.TA0004',
+        'Execution': 'ML.TA0005',
+        'Persistence': 'ML.TA0006',
+        'Defense Evasion': 'ML.TA0007',
+        'Discovery': 'ML.TA0008',
+        'Collection': 'ML.TA0009',
+        'Exfiltration': 'ML.TA0010',
+        'Impact': 'ML.TA0011',
+        'Privilege Escalation': 'ML.TA0006', // map to Persistence in ATLAS
       };
 
       const tactics = [];
