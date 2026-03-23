@@ -332,12 +332,13 @@ function mountPolicyRoutes(app, pool, opts = {}) {
             `INSERT INTO ext_authz_decisions (
               decision_id, source_principal, source_name, destination_principal, destination_name,
               method, path_pattern, verdict, policy_name, enforcement_action,
-              adapter_mode, latency_ms, trace_id, hop_index, total_hops
-            ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15)`,
+              adapter_mode, latency_ms, trace_id, hop_index, total_hops, enforcement_detail, tenant_id
+            ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17)`,
             [decId, srcSpiffe, srcName, pair.destSpiffe, pair.dest,
              'POLICY_APPLY', `/${createdPolicy.policy_type}/${createdPolicy.name}`, verdict,
              createdPolicy.name, enfAction, adapterMode,
-             Math.floor(Math.random() * 4) + 1, traceId, pair.idx, pairs.length]
+             Math.floor(Math.random() * 4) + 1, traceId, pair.idx, pairs.length,
+             enfDetail, req.tenantId || '00000000-0000-0000-0000-000000000001']
           );
         }
       } catch (decGenErr) { console.warn('[from-template] decision generation failed:', decGenErr.message); }
@@ -383,14 +384,15 @@ function mountPolicyRoutes(app, pool, opts = {}) {
                     `INSERT INTO ext_authz_decisions (
                       decision_id, source_principal, source_name, destination_principal, destination_name,
                       method, path_pattern, verdict, policy_name, enforcement_action,
-                      adapter_mode, latency_ms, trace_id, hop_index, total_hops
-                    ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15)`,
+                      adapter_mode, latency_ms, trace_id, hop_index, total_hops, tenant_id
+                    ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16)`,
                     [decId, `spiffe://wid-platform/workload/${srcName}`, srcName,
                      peer.spiffe_id || `spiffe://wid-platform/workload/${peer.name}`, peer.name,
                      'POLICY_ENFORCE', `/${upPolicy.policy_type || 'access'}/${upPolicy.name}`,
                      pi === 0 ? 'deny' : 'allow', upPolicy.name,
                      pi === 0 ? 'REJECT_REQUEST' : 'FORWARD_REQUEST',
-                     'enforce', Math.floor(Math.random() * 3) + 1, traceId, pi, peerR.rows.length]
+                     'enforce', Math.floor(Math.random() * 3) + 1, traceId, pi, peerR.rows.length,
+                     req.tenantId || '00000000-0000-0000-0000-000000000001']
                   );
                 }
               } catch (decErr) { /* non-fatal */ }
@@ -1500,14 +1502,15 @@ function mountPolicyRoutes(app, pool, opts = {}) {
           await db(req).query(
             `INSERT INTO ext_authz_decisions (
               decision_id, source_principal, source_name, destination_principal, destination_name,
-              method, path_pattern, verdict, policy_name, enforcement_action,
-              adapter_mode, latency_ms, trace_id, hop_index, total_hops
-            ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15)`,
+              method, path_pattern, verdict, policy_name, enforcement_action, enforcement_detail,
+              adapter_mode, latency_ms, trace_id, hop_index, total_hops, tenant_id
+            ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17)`,
             [decId, spiffeId, w.name, 'spiffe://wid-platform/policy-engine', 'policy-evaluation',
              'EVALUATE', `/${policy.policy_type}/${policy.name}`, verdict, policy.name, enforcementAction,
-             adapterMode, Math.floor(Math.random() * 5) + 1, traceId, i, sample.length]
+             enforcementDetail, adapterMode, Math.floor(Math.random() * 5) + 1, traceId, i, sample.length,
+             req.tenantId || '00000000-0000-0000-0000-000000000001']
           );
-        } catch (decErr) { /* non-fatal */ }
+        } catch (decErr) { console.log('[evaluate] Decision insert error:', decErr.message); }
       }
 
       await db(req).query('UPDATE policies SET last_evaluated=NOW(), evaluation_count=evaluation_count+1 WHERE id=$1', [policy.id]);
