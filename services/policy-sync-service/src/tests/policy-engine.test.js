@@ -115,7 +115,7 @@ assert(evaluator.evaluateAll([{id:0,name:'Off',conditions:[{field:'verified',ope
 assert(evaluator.evaluateAll([{id:0,name:'DM',conditions:[{field:'verified',operator:'is_false'}],actions:[],severity:'low',enabled:true,enforcement_mode:'disabled'}],w({verified:false})).length===0, 'Mode disabled → skip');
 
 console.log('\n═══ COMPLIANCE FRAMEWORKS ═══');
-const VALID_FRAMEWORKS = ['SOC2', 'PCI_DSS', 'NIST_800_53', 'ISO_27001', 'EU_AI_ACT'];
+const VALID_FRAMEWORKS = ['SOC2', 'PCI_DSS', 'NIST_800_53', 'ISO_27001', 'EU_AI_ACT', 'MITRE_ATLAS'];
 let templatesWithFrameworks = 0;
 for (const [id, tpl] of Object.entries(POLICY_TEMPLATES)) {
   const cfs = tpl.compliance_frameworks || [];
