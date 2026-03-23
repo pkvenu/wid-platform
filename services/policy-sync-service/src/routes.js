@@ -1521,8 +1521,8 @@ function mountPolicyRoutes(app, pool, opts = {}) {
       console.error(`[evaluate] Wrote ${decisionsWritten}/${sample.length} decisions`);
 
       await db(req).query('UPDATE policies SET last_evaluated=NOW(), evaluation_count=evaluation_count+1 WHERE id=$1', [policy.id]);
-      res.json({ policy: policy.name, ...result });
-    } catch (e) { res.status(500).json({ error: e.message }); }
+      res.json({ policy: policy.name, ...result, decisions_generated: decisionsWritten, sample_count: sample.length });
+    } catch (e) { res.status(500).json({ error: e.message, stack: e.stack?.split('\n').slice(0,3) }); }
   });
 
   // ══════════════════════════════════════════════
