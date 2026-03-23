@@ -1,11 +1,13 @@
 import React from 'react';
-import { Navigate, Outlet, useLocation } from 'react-router-dom';
+import { Navigate, Outlet, useLocation, useParams } from 'react-router-dom';
 import { useOnboarding } from '../../context/OnboardingContext';
 
 export default function OnboardingGuard() {
   const { hasConnectors, loading } = useOnboarding();
   const { pathname } = useLocation();
+  const { tenantSlug } = useParams();
   const onboardingComplete = localStorage.getItem('wid_onboarding_complete') === 'true';
+  const prefix = tenantSlug ? `/${tenantSlug}` : '';
 
   // Still loading — render nothing (parent Layout already visible, avoids flash)
   if (loading) return null;
@@ -16,8 +18,9 @@ export default function OnboardingGuard() {
   }
 
   // Onboarding done but no connectors → send to connectors page
-  if (hasConnectors === false && pathname !== '/connectors') {
-    return <Navigate to="/connectors" replace />;
+  const connectorsPath = `${prefix}/connectors`;
+  if (hasConnectors === false && pathname !== connectorsPath && pathname !== '/connectors') {
+    return <Navigate to={connectorsPath} replace />;
   }
 
   return <Outlet />;

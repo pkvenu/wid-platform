@@ -63,8 +63,10 @@ export function AuthProvider({ children }) {
     setTenant(null);
   }, []);
 
+  const tenantSlug = tenant?.slug || 'default';
+
   return (
-    <AuthContext.Provider value={{ user, tenant, setTenant, loading, hasUsers, login, register, logout }}>
+    <AuthContext.Provider value={{ user, tenant, tenantSlug, setTenant, loading, hasUsers, login, register, logout }}>
       {children}
     </AuthContext.Provider>
   );

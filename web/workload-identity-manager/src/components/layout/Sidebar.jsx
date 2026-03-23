@@ -36,10 +36,16 @@ const ONBOARDING_NAV_ITEMS = [
 const Sidebar = ({ isCollapsed, onToggleCollapse }) => {
   const location = useLocation();
   const navigate = useNavigate();
-  const { user, tenant, logout } = useAuth();
+  const { user, tenant, tenantSlug, logout } = useAuth();
   const { hasConnectors } = useOnboarding();
 
-  const NAV_ITEMS = hasConnectors ? ALL_NAV_ITEMS : ONBOARDING_NAV_ITEMS;
+  // Prefix nav paths with tenant slug
+  const prefixedItems = (hasConnectors ? ALL_NAV_ITEMS : ONBOARDING_NAV_ITEMS).map(item => ({
+    ...item,
+    path: `/${tenantSlug}${item.path}`,
+    basePath: item.path, // keep original for active matching
+  }));
+  const NAV_ITEMS = prefixedItems;
 
   const handleLogout = async () => {
     await logout();
@@ -51,8 +57,11 @@ const Sidebar = ({ isCollapsed, onToggleCollapse }) => {
     : '?';
 
   const isActive = (path) => {
+    // Match against both tenant-prefixed path and the base path
     return location.pathname === path || location.pathname.startsWith(path + '/');
   };
+
+  const tenantPrefix = `/${tenantSlug}`;
 
   return (
     <aside
@@ -148,7 +157,7 @@ const Sidebar = ({ isCollapsed, onToggleCollapse }) => {
         {hasConnectors && (
           <div className={`mt-3 pt-3 border-t border-brd ${isCollapsed ? 'px-1.5' : 'px-2'}`}>
             <Link
-              to="/workloads"
+              to={`${tenantPrefix}/workloads`}
               className={`flex items-center gap-2.5 h-10 rounded-lg bg-accent/[0.08] text-accent border border-accent/20 transition-all duration-150 hover:bg-accent/[0.15] hover:border-accent/35 hover:shadow-[0_0_12px_rgba(124,111,240,0.15)] ${
                 isCollapsed ? 'justify-center px-0' : 'px-3'
               }`}

@@ -19,6 +19,7 @@ import Connectors from './pages/Connectors';
 import Compliance from './pages/Compliance';
 import TenantSettings from './pages/TenantSettings';
 import AIInventory from './pages/AIInventory';
+import TenantRedirect from './components/auth/TenantRedirect';
 
 function App() {
   return (
@@ -41,7 +42,12 @@ function App() {
         <Route path="/onboarding" element={<ProtectedRoute />}>
           <Route index element={<OnboardingWizard />} />
         </Route>
+        {/* Root redirect: authenticated users go to /:tenantSlug/ */}
         <Route path="/" element={<ProtectedRoute />}>
+          <Route index element={<TenantRedirect />} />
+        </Route>
+        {/* Tenant-scoped routes */}
+        <Route path="/:tenantSlug" element={<ProtectedRoute />}>
           <Route element={<Layout />}>
             {/* Connectors is always accessible (onboarding landing page) */}
             <Route path="connectors" element={<Connectors />} />
@@ -62,6 +68,34 @@ function App() {
               <Route path="ai-inventory" element={<AIInventory />} />
             </Route>
           </Route>
+        </Route>
+        {/* Legacy non-tenant routes: redirect to tenant-scoped equivalents */}
+        <Route path="/workloads" element={<ProtectedRoute />}>
+          <Route index element={<TenantRedirect path="workloads" />} />
+        </Route>
+        <Route path="/graph" element={<ProtectedRoute />}>
+          <Route index element={<TenantRedirect path="graph" />} />
+        </Route>
+        <Route path="/policies" element={<ProtectedRoute />}>
+          <Route index element={<TenantRedirect path="policies" />} />
+        </Route>
+        <Route path="/access" element={<ProtectedRoute />}>
+          <Route index element={<TenantRedirect path="access" />} />
+        </Route>
+        <Route path="/connectors" element={<ProtectedRoute />}>
+          <Route index element={<TenantRedirect path="connectors" />} />
+        </Route>
+        <Route path="/compliance" element={<ProtectedRoute />}>
+          <Route index element={<TenantRedirect path="compliance" />} />
+        </Route>
+        <Route path="/settings" element={<ProtectedRoute />}>
+          <Route index element={<TenantRedirect path="settings" />} />
+        </Route>
+        <Route path="/ai-inventory" element={<ProtectedRoute />}>
+          <Route index element={<TenantRedirect path="ai-inventory" />} />
+        </Route>
+        <Route path="/dashboard" element={<ProtectedRoute />}>
+          <Route index element={<TenantRedirect path="dashboard" />} />
         </Route>
       </Routes>
     </Router>
