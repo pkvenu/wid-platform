@@ -1482,7 +1482,7 @@ function mountPolicyRoutes(app, pool, opts = {}) {
         sampleWorkloads = directWR.rows.map(parseWorkload);
       }
       const sample = sampleWorkloads;
-      console.log(`[evaluate] Generating ${sample.length} decisions for policy "${policy.name}" tenant=${tenantId}`);
+      console.error(`[evaluate] Generating ${sample.length} decisions for policy "${policy.name}" tenant=${tenantId} workloads=${workloads.length}`);
       let decisionsWritten = 0;
       for (let i = 0; i < sample.length; i++) {
         const w = sample[i];
@@ -1516,9 +1516,9 @@ function mountPolicyRoutes(app, pool, opts = {}) {
              tenantId]
           );
           decisionsWritten++;
-        } catch (decErr) { console.log('[evaluate] Decision insert error:', decErr.message); }
+        } catch (decErr) { console.error('[evaluate] Decision insert error:', decErr.message); }
       }
-      console.log(`[evaluate] Wrote ${decisionsWritten}/${sample.length} decisions`);
+      console.error(`[evaluate] Wrote ${decisionsWritten}/${sample.length} decisions`);
 
       await db(req).query('UPDATE policies SET last_evaluated=NOW(), evaluation_count=evaluation_count+1 WHERE id=$1', [policy.id]);
       res.json({ policy: policy.name, ...result });
