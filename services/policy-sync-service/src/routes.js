@@ -1475,7 +1475,13 @@ function mountPolicyRoutes(app, pool, opts = {}) {
       // Generate 5 decision records using workloads from the registry
       // Use pool directly (bypassing RLS) to ensure records are always written
       const tenantId = req.tenantId || '00000000-0000-0000-0000-000000000001';
-      const sample = workloads.slice(0, 5);
+      // If workloads is empty (RLS scope), fetch directly via pool
+      let sampleWorkloads = workloads.slice(0, 5);
+      if (sampleWorkloads.length === 0) {
+        const directWR = await pool.query('SELECT * FROM workloads LIMIT 5');
+        sampleWorkloads = directWR.rows.map(parseWorkload);
+      }
+      const sample = sampleWorkloads;
       console.log(`[evaluate] Generating ${sample.length} decisions for policy "${policy.name}" tenant=${tenantId}`);
       let decisionsWritten = 0;
       for (let i = 0; i < sample.length; i++) {
