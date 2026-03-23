@@ -1472,12 +1472,9 @@ function mountPolicyRoutes(app, pool, opts = {}) {
       // This bridges the gap between graph-driven simulate/enforce and the Access Events view.
       const mode = policy.enforcement_mode || 'audit';
       const traceId = `ui-eval-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
-      const evaluatedWorkloads = workloads.filter(w => {
-        const r = evaluator.evaluatePolicy(policy, w, {});
-        return !r.skipped;
-      });
-      // Pick up to 5 representative workload pairs for decision records
-      const sample = evaluatedWorkloads.slice(0, 5);
+      // Pick up to 5 workloads for decision records — use all workloads (not just evaluated)
+      // so we always generate visible Access Events even if the policy scope is narrow.
+      const sample = workloads.slice(0, 5);
       const violatingNames = new Set(result.results.map(v => v.workload_name));
       for (let i = 0; i < sample.length; i++) {
         const w = sample[i];
