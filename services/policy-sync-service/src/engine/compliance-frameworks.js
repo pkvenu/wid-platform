@@ -108,6 +108,28 @@ const COMPLIANCE_FRAMEWORKS = {
       'Art.26': 'Obligations of Deployers',
       'Art.72': 'Monitoring and Reporting of Serious Incidents'
     }
+  },
+  MITRE_ATLAS: {
+    id: 'MITRE_ATLAS',
+    name: 'MITRE ATLAS',
+    description: 'Adversarial Threat Landscape for AI Systems — tactics, techniques, and mitigations for ML/AI security',
+    icon: 'target',
+    controls: {
+      'AML.T0002': 'Active Scanning — Reconnaissance of ML models and AI services',
+      'AML.T0010': 'ML Supply Chain Compromise — Poisoned models, packages, or dependencies',
+      'AML.T0010.001': 'Poison Training Data — Manipulate training datasets to embed backdoors',
+      'AML.T0010.002': 'Poison ML Model — Compromise model integrity via supply chain',
+      'AML.T0012': 'Exploit Public-Facing Application — Abuse over-privileged AI endpoints',
+      'AML.T0012.001': 'Valid Accounts — Compromise shared or over-permissioned service accounts',
+      'AML.T0014': 'Discover ML Model — Enumerate AI models and capabilities',
+      'AML.T0024': 'Exfiltration via ML Inference API — Extract data through model queries',
+      'AML.T0025': 'Exfiltration via Cyber Means — Steal credentials or data via leaked keys',
+      'AML.T0029': 'Denial of ML Service — Disrupt AI service availability',
+      'AML.T0034': 'Cost Harvesting — Exploit AI compute for unauthorized usage',
+      'AML.T0040': 'ML Model Inference API Access — Unauthorized access to model endpoints',
+      'AML.T0043': 'Establish Accounts — Create persistent access via unauthenticated agents',
+      'AML.T0043.001': 'Compromise Agent Identity — Forge or tamper with agent credentials'
+    }
   }
 };
 

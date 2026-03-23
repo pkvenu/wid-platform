@@ -2822,4 +2822,37 @@ const FINDING_REMEDIATION_MAP = {
   ],
 };
 
+// ── MITRE ATLAS auto-mapping based on template tags/names ──
+const ATLAS_TAG_MAPPING = {
+  'ai-agent':       [{ framework: 'MITRE_ATLAS', controls: ['AML.T0043', 'AML.T0012'] }],
+  'mcp':            [{ framework: 'MITRE_ATLAS', controls: ['AML.T0010', 'AML.T0010.002'] }],
+  'delegation':     [{ framework: 'MITRE_ATLAS', controls: ['AML.T0043', 'AML.T0043.001'] }],
+  'credential':     [{ framework: 'MITRE_ATLAS', controls: ['AML.T0025', 'AML.T0024'] }],
+  'jit':            [{ framework: 'MITRE_ATLAS', controls: ['AML.T0024', 'AML.T0040'] }],
+  'external-api':   [{ framework: 'MITRE_ATLAS', controls: ['AML.T0024', 'AML.T0029'] }],
+  'attestation':    [{ framework: 'MITRE_ATLAS', controls: ['AML.T0043', 'AML.T0012.001'] }],
+  'scope':          [{ framework: 'MITRE_ATLAS', controls: ['AML.T0012', 'AML.T0040'] }],
+  'posture':        [{ framework: 'MITRE_ATLAS', controls: ['AML.T0002', 'AML.T0014'] }],
+};
+// Apply ATLAS mappings to templates based on tags
+for (const [id, tpl] of Object.entries(POLICY_TEMPLATES)) {
+  const tags = tpl.tags || [];
+  const atlasControls = new Set();
+  for (const tag of tags) {
+    const mappings = ATLAS_TAG_MAPPING[tag];
+    if (mappings) {
+      for (const m of mappings) {
+        for (const c of m.controls) atlasControls.add(c);
+      }
+    }
+  }
+  if (atlasControls.size > 0) {
+    if (!tpl.compliance_frameworks) tpl.compliance_frameworks = [];
+    // Don't duplicate if already mapped
+    if (!tpl.compliance_frameworks.some(f => f.framework === 'MITRE_ATLAS')) {
+      tpl.compliance_frameworks.push({ framework: 'MITRE_ATLAS', controls: [...atlasControls] });
+    }
+  }
+}
+
 module.exports = { POLICY_TEMPLATES, FINDING_REMEDIATION_MAP };
